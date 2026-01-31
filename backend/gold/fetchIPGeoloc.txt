@@ -1,0 +1,4 @@
+LAT=42.22571
+LNG=-71.52862
+IP=74.104.128.89
+CREDIT=ipgeolocation.io

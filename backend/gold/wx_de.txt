@@ -1,0 +1,11 @@
+city=Boston
+temperature_c=-6
+pressure_hPa=1018
+pressure_chg=-999
+humidity_percent=53
+wind_speed_mps=3.09
+wind_dir_name=NW
+clouds=few clouds
+conditions=Clouds
+attribution=openweathermap.org
+timezone=-18000

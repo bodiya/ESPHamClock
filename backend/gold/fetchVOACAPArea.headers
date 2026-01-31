@@ -1,0 +1,5 @@
+HTTP/1.0 200 Ok
+Connection: close
+Remote_Addr: 74.104.128.89
+Content-Type: image/bmp; charset=ISO-8859-1
+

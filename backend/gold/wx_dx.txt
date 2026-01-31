@@ -1,0 +1,11 @@
+city=London
+temperature_c=7.8
+pressure_hPa=1002
+pressure_chg=-999
+humidity_percent=86
+wind_speed_mps=2.68
+wind_dir_name=SW
+clouds=broken clouds
+conditions=Clouds
+attribution=openweathermap.org
+timezone=0
