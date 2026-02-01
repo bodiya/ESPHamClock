@@ -7,6 +7,26 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from .http import fetch_first_ok
+
+
+def _read_cache(path: Path, max_age_seconds: float) -> Optional[bytes]:
+    if not path.exists():
+        return None
+    if max_age_seconds > 0:
+        age = (datetime.now(timezone.utc) - datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)).total_seconds()
+        if age > max_age_seconds:
+            return None
+    try:
+        return path.read_bytes()
+    except Exception:
+        return None
+
+
+def _write_cache(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_bytes(data)
+    tmp.replace(path)
 from .phase1 import FetchContext
 
 
@@ -209,7 +229,17 @@ def update_kindex(ctx: FetchContext) -> bool:
 
 def update_xray(ctx: FetchContext) -> bool:
     url = "https://services.swpc.noaa.gov/json/goes/primary/xrays-7-day.json"
-    data = _load_json([url], ctx)
+    cache_path = ctx.data_root / "xray" / "xrays-7-day.json"
+    cached = _read_cache(cache_path, max_age_seconds=300)
+    if cached is None:
+        result = fetch_first_ok([url], ctx.timeout, ctx.user_agent)
+        cached = result.content
+        _write_cache(cache_path, cached)
+    try:
+        data = json.loads(cached)
+    except Exception as exc:
+        log.warning("xray cache decode failed: %s", exc)
+        data = _load_json([url], ctx)
     if not isinstance(data, list) or not data:
         return False
 
@@ -229,16 +259,31 @@ def update_xray(ctx: FetchContext) -> bool:
         elif "0.1" in energy:
             long_band[str(time_tag)] = float(flux)
 
-    all_times = sorted(set(short_band) | set(long_band))
-    lines: List[str] = []
-    for time_tag in all_times:
+    samples: List[Tuple[datetime, float, float]] = []
+    for time_tag in set(short_band) | set(long_band):
         dt = _parse_time(time_tag)
         if dt is None:
             continue
         short = short_band.get(time_tag, 1e-9)
         long = long_band.get(time_tag, 1e-9)
+        samples.append((dt, short, long))
+
+    samples.sort(key=lambda item: item[0])
+    if samples:
+        offset = samples[-1][0].minute % 10
+        ten_min = [item for item in samples if item[0].minute % 10 == offset]
+        if len(ten_min) >= 150:
+            samples = ten_min[-150:]
+        else:
+            samples = samples[-150:]
+
+    lines: List[str] = []
+    for dt, short, long in samples:
         hhmm = dt.hour * 100 + dt.minute
-        line = f"{dt.year:4d} {dt.month:2d} {dt.day:2d} {hhmm:5d}   00000  00000 {short:11.2e} {long:11.2e}"
+        line = (
+            f"{dt.year:4d} {dt.month:2d} {dt.day:2d}  {hhmm:04d}"
+            f"   00000  00000  {short:11.2e} {long:11.2e}"
+        )
         lines.append(line)
 
     if not lines:
@@ -537,7 +582,7 @@ PHASE2_JOBS = [
     {"id": "update_solar_flux", "func": update_solar_flux, "trigger": "interval", "hours": 1, "replace_existing": True},
     {"id": "update_solar_flux_history", "func": update_solar_flux_history, "trigger": "interval", "hours": 24, "replace_existing": True},
     {"id": "update_kindex", "func": update_kindex, "trigger": "interval", "hours": 1, "replace_existing": True},
-    {"id": "update_xray", "func": update_xray, "trigger": "interval", "minutes": 5, "replace_existing": True},
+    {"id": "update_xray", "func": update_xray, "trigger": "interval", "minutes": 1, "replace_existing": True},
     {"id": "update_solar_wind", "func": update_solar_wind, "trigger": "interval", "minutes": 5, "replace_existing": True},
     {"id": "update_bz", "func": update_bz, "trigger": "interval", "minutes": 5, "replace_existing": True},
     {"id": "update_noaa_scales", "func": update_noaa_scales, "trigger": "interval", "hours": 1, "replace_existing": True},
