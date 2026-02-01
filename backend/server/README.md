@@ -52,7 +52,6 @@ curl -v "http://localhost:8080/fetchIPGeoloc.pl?IP=8.8.8.8"
 - `HAMCLOCK_FALLBACK_ENABLED` (default: `0`)
 - `HAMCLOCK_FALLBACK_DIR` (default: `./fallback`)
 - `HAMCLOCK_FALLBACK_BASE_URL` (default: `http://clearskyinstitute.com`)
-- `HAMCLOCK_FALLBACK_MAX_AGE` (default: `0`, never expire)
 - `HAMCLOCK_FALLBACK_LOG_FILE` (default: unset)
 
 ## Phase 1 Fetchers
@@ -105,7 +104,6 @@ SOTA support remains disabled (use fallback if needed).
 --clearskyinstitute-fallback
 --fallback-dir PATH
 --fallback-base-url URL
---fallback-max-age SECONDS
 --fallback-log-file PATH
 --fetcher-timeout SECONDS
 --fetcher-ua STRING

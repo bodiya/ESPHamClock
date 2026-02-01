@@ -99,14 +99,7 @@ def _read_cache(body_path: Path, headers_path: Path) -> Optional[CachedResponse]
 
     status = int(meta.get("status", 200))
     headers = {str(k): str(v) for k, v in meta.get("headers", {}).items()}
-    fetched_at_raw = meta.get("fetched_at")
-    fetched_at = None
-    if isinstance(fetched_at_raw, str):
-        try:
-            fetched_at = datetime.fromisoformat(fetched_at_raw)
-        except ValueError:
-            fetched_at = None
-    return CachedResponse(status=status, headers=headers, body=body, fetched_at=fetched_at)
+    return CachedResponse(status=status, headers=headers, body=body)
 
 
 def _write_cache(body_path: Path, headers_path: Path, status: int, headers: Dict[str, str], body: bytes) -> None:
@@ -145,22 +138,6 @@ def fetch_with_cache(
         body_path, headers_path = _cache_paths(fallback_dir, request.path, query)
     except SafePathError:
         return None
-
-    cached = _read_cache(body_path, headers_path)
-    if cached is not None:
-        if max_age_seconds > 0 and cached.fetched_at is not None:
-            age = (datetime.now(timezone.utc) - cached.fetched_at).total_seconds()
-            if age > max_age_seconds:
-                cached = None
-        if cached is not None:
-            _log_request("FALLBACK CACHE")
-            _log_response("FALLBACK CACHE", cached.status, cached.headers, cached.body)
-            resp = Response(cached.body, status=cached.status)
-            for key, value in cached.headers.items():
-                if key.lower() == "content-length":
-                    continue
-                resp.headers[key] = value
-            return resp
 
     _log_request("FALLBACK FETCH")
     url = f"{base_url}{full_path}"

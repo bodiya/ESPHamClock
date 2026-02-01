@@ -30,7 +30,6 @@ def default_config() -> dict:
         .expanduser()
         .resolve(),
         "FALLBACK_BASE_URL": os.environ.get("HAMCLOCK_FALLBACK_BASE_URL", "http://clearskyinstitute.com"),
-        "FALLBACK_MAX_AGE": float(os.environ.get("HAMCLOCK_FALLBACK_MAX_AGE", "0")),
         "FALLBACK_LOG_FILE": os.environ.get("HAMCLOCK_FALLBACK_LOG_FILE"),
         "RSS_FEEDS": [
             url.strip()

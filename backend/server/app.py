@@ -99,7 +99,7 @@ def _serve_text_file(rel_path: str) -> Response:
                 fallback_dir=app.config["FALLBACK_DIR"],
                 base_url=app.config["FALLBACK_BASE_URL"],
                 timeout=app.config.get("FETCHER_TIMEOUT", 15.0),
-                max_age_seconds=app.config.get("FALLBACK_MAX_AGE", 0.0),
+                max_age_seconds=0.0,
             )
             if resp is not None:
                 return resp
@@ -119,7 +119,7 @@ def _serve_binary_file(rel_path: str) -> Response:
                 fallback_dir=app.config["FALLBACK_DIR"],
                 base_url=app.config["FALLBACK_BASE_URL"],
                 timeout=app.config.get("FETCHER_TIMEOUT", 15.0),
-                max_age_seconds=app.config.get("FALLBACK_MAX_AGE", 0.0),
+                max_age_seconds=0.0,
             )
             if resp is not None:
                 return resp
@@ -143,7 +143,7 @@ def handle_not_found(error) -> Response:
             fallback_dir=app.config["FALLBACK_DIR"],
             base_url=app.config["FALLBACK_BASE_URL"],
             timeout=app.config.get("FETCHER_TIMEOUT", 15.0),
-            max_age_seconds=app.config.get("FALLBACK_MAX_AGE", 0.0),
+            max_age_seconds=0.0,
         )
         if resp is not None:
             return resp
@@ -361,7 +361,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--clearskyinstitute-fallback", action="store_true", help="Proxy missing endpoints to clearskyinstitute.com and cache results")
     parser.add_argument("--fallback-dir", help="Fallback cache directory (default: ./fallback)")
     parser.add_argument("--fallback-base-url", help="Fallback base URL (default: http://clearskyinstitute.com)")
-    parser.add_argument("--fallback-max-age", type=float, help="Max cache age in seconds (0=never expire)")
     parser.add_argument("--fallback-log-file", help="Log fallback requests/responses to this file")
     parser.add_argument("--fetcher-timeout", type=float, help="Fetcher timeout in seconds")
     parser.add_argument("--fetcher-ua", help="User-Agent string for fetchers")
@@ -393,8 +392,6 @@ if __name__ == "__main__":
         app.config["FALLBACK_DIR"] = Path(args.fallback_dir).expanduser().resolve()
     if args.fallback_base_url:
         app.config["FALLBACK_BASE_URL"] = args.fallback_base_url
-    if args.fallback_max_age is not None:
-        app.config["FALLBACK_MAX_AGE"] = args.fallback_max_age
     if args.fallback_log_file:
         app.config["FALLBACK_LOG_FILE"] = args.fallback_log_file
     if args.hamclock_version:
