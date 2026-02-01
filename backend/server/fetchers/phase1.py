@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import re
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -146,7 +147,7 @@ def _parse_cty_simple(raw: str) -> List[Tuple[str, float, float, int]]:
     for line in raw.splitlines():
         if not line or line.startswith("#"):
             continue
-        parts = line.split()
+        parts = line.replace(",", " ").split()
         if len(parts) < 4:
             continue
         prefix = parts[0]
@@ -160,6 +161,90 @@ def _parse_cty_simple(raw: str) -> List[Tuple[str, float, float, int]]:
     return rows
 
 
+def _strip_prefix_token(token: str) -> str:
+    token = token.strip().rstrip(";")
+    if "=" in token:
+        token = token.split("=", 1)[1]
+    token = re.sub(r"\\(.*?\\)", "", token)  # remove (lat lon) overrides
+    token = re.sub(r"\\[.*?\\]", "", token)  # remove [dxcc] overrides
+    token = re.sub(r"\\{.*?\\}", "", token)  # remove {itu} overrides
+    token = re.sub(r"<.*?>", "", token)  # remove <lat/lon> overrides
+    token = token.replace("*", "").replace("?", "").strip()
+    return token
+
+
+def _parse_cty_dat(raw: str) -> List[Tuple[str, float, float, int]]:
+    rows: List[Tuple[str, float, float, int]] = []
+    buffer = ""
+    current_dxcc: Optional[int] = None
+    for line in raw.splitlines():
+        if not line:
+            continue
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            if stripped.upper().startswith("# ADIF"):
+                parts = stripped.split()
+                if len(parts) >= 3 and parts[2].isdigit():
+                    current_dxcc = int(parts[2])
+            continue
+        if stripped.upper().startswith("ADIF"):
+            parts = stripped.split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                current_dxcc = int(parts[1])
+            continue
+        buffer = f"{buffer} {line.strip()}" if buffer else line.strip()
+        while ";" in buffer:
+            block, buffer = buffer.split(";", 1)
+            fields = [f.strip() for f in block.split(":")]
+            if len(fields) < 9:
+                continue
+            try:
+                lat = float(fields[4])
+                lng = float(fields[5])
+            except Exception:
+                continue
+            dxcc = None
+            if current_dxcc is not None:
+                dxcc = current_dxcc
+            else:
+                try:
+                    dxcc = int(fields[7])
+                except Exception:
+                    dxcc = None
+            if dxcc is None:
+                continue
+            primary_prefix = fields[7].strip()
+            prefix_blob = ":".join(fields[8:])
+            tokens = [primary_prefix] + [t.strip() for t in prefix_blob.split(",") if t.strip()]
+            for token in tokens:
+                if not token:
+                    continue
+                lat_override = re.search(r"<\\s*([-\\d.]+)\\s*[/\\\\s]\\s*([-\\d.]+)\\s*>", token)
+                if not lat_override:
+                    lat_override = re.search(r"\\(([-\\d.]+)\\s+([-\\d.]+)\\)", token)
+                dxcc_override = re.search(r"\\[(\\d+)\\]", token)
+                use_lat = lat
+                use_lng = lng
+                use_dxcc = dxcc
+                if lat_override:
+                    use_lat = float(lat_override.group(1))
+                    use_lng = float(lat_override.group(2))
+                if dxcc_override:
+                    use_dxcc = int(dxcc_override.group(1))
+                prefix = _strip_prefix_token(token)
+                if prefix:
+                    rows.append((prefix, use_lat, use_lng, use_dxcc))
+    return rows
+
+
+def format_cty_output(rows: List[Tuple[str, float, float, int]], extracted_from: str) -> List[str]:
+    output = [f"# extracted from cty_wt_mod.dat on {extracted_from}"]
+    output.append("# prefix     lat+N   lng+E  DXCC")
+    for prefix, lat, lng, dxcc in rows:
+        output.append(f"{prefix:<11}{lat:7.2f}  {lng:7.2f}  {dxcc}")
+    return output
+
+
 def update_cty(ctx: FetchContext) -> bool:
     urls = [
         "https://www.country-files.com/cty/cty_wt_mod.dat",
@@ -170,14 +255,22 @@ def update_cty(ctx: FetchContext) -> bool:
 
     rows = _parse_cty_simple(raw)
     if not rows:
-        log.warning("cty_wt_mod.dat parse yielded no rows")
-        return False
+        rows = _parse_cty_dat(raw)
+    if not rows:
+        log.warning("cty_wt_mod.dat parse yielded no rows, falling back to cty.dat")
+        cty_urls = [
+            "https://www.country-files.com/cty/cty.dat",
+            "https://www.country-files.com/big-cty/cty.dat",
+        ]
+        result = fetch_first_ok(cty_urls, ctx.timeout, ctx.user_agent)
+        raw = result.content.decode("utf-8", errors="replace")
+        rows = _parse_cty_dat(raw)
+        if not rows:
+            log.warning("cty.dat parse yielded no rows")
+            return False
 
     now = datetime.now(timezone.utc).strftime("%a %b %d %H:%M:%S %YZ")
-    output = [f"# extracted from cty_wt_mod.dat on {now}"]
-    output.append("# prefix     lat+N   lng+E  DXCC")
-    for prefix, lat, lng, dxcc in rows:
-        output.append(f"{prefix:<12}{lat:7.2f} {lng:7.2f}  {dxcc}")
+    output = format_cty_output(rows, now)
 
     target = ctx.data_root / "cty" / "cty_wt_mod-ll-dxcc.txt"
     _atomic_write(target, "\n".join(output) + "\n")

@@ -65,6 +65,21 @@ When the scheduler is enabled, Phase 1 refresh jobs run automatically:
 
 Set `HAMCLOCK_VERSION` and optionally `HAMCLOCK_VERSION_INFO` to control `version.txt`.
 
+## Phase 2 Fetchers (Space Weather)
+
+When the scheduler is enabled, Phase 2 refresh jobs run automatically:
+
+- SSN (`ssn/ssn-31.txt`, `ssn/ssn-history.txt`)
+- Solar flux (`solar-flux/solarflux-99.txt`, `solar-flux/solarflux-history.txt`)
+- Kp index (`geomag/kindex.txt`)
+- X-ray flux (`xray/xray.txt`)
+- Solar wind (`solar-wind/swind-24hr.txt`)
+- IMF Bz/Bt (`Bz/Bz.txt`)
+- NOAA scales (`NOAASpaceWX/noaaswx.txt`)
+- Aurora (`aurora/aurora.txt`)
+- Dst (`dst/dst.txt`)
+- D-RAP stats (`drap/stats.txt`)
+
 ## CLI Flags
 
 ```
@@ -74,6 +89,7 @@ Set `HAMCLOCK_VERSION` and optionally `HAMCLOCK_VERSION_INFO` to control `versio
 --log-level LEVEL
 --base-path PATH
 --refresh-on-start
+--refresh-cty-only
 --hamclock-version VERSION
 --hamclock-version-info INFO
 --clearskyinstitute-fallback

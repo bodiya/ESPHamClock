@@ -14,7 +14,8 @@ from .scheduler import start_scheduler
 from .services.geoloc import lookup_ip
 from .storage import SafePathError, read_binary_and_mtime, read_text_and_mtime
 from .tasks import build_context
-from .fetchers.phase1 import run_phase1
+from .fetchers.phase1 import run_phase1, update_cty
+from .fetchers.phase2 import run_phase2
 from .fallback import fetch_with_cache, setup_fallback_logging
 
 
@@ -277,6 +278,7 @@ def init_scheduler() -> None:
 def refresh_on_start() -> None:
     ctx = build_context(app)
     run_phase1(ctx)
+    run_phase2(ctx)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -287,6 +289,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--log-level", help="Logging level (default: INFO)")
     parser.add_argument("--base-path", help="Optional base URL path, e.g. /ham/HamClock")
     parser.add_argument("--refresh-on-start", action="store_true", help="Run Phase 1 fetchers before serving")
+    parser.add_argument("--refresh-cty-only", action="store_true", help="Run only CTY refresh before serving")
     parser.add_argument("--hamclock-version", help="Version string for version.txt")
     parser.add_argument("--hamclock-version-info", help="Optional second line for version.txt")
     parser.add_argument("--clearskyinstitute-fallback", action="store_true", help="Proxy missing endpoints to clearskyinstitute.com and cache results")
@@ -346,7 +349,10 @@ if __name__ == "__main__":
     logging.basicConfig(level=app.config["LOG_LEVEL"])
     setup_fallback_logging(app.config.get("FALLBACK_LOG_FILE"))
     register_base_path_aliases()
-    if args.refresh_on_start:
+    if args.refresh_cty_only:
+        ctx = build_context(app)
+        update_cty(ctx)
+    elif args.refresh_on_start:
         refresh_on_start()
     init_scheduler()
     app.run(host="0.0.0.0", port=app.config["PORT"])

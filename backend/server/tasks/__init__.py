@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from ..fetchers.phase1 import FetchContext, PHASE1_JOBS
+from ..fetchers.phase2 import PHASE2_JOBS
 
 
 log = logging.getLogger("hamclock-backend.tasks")
@@ -37,6 +38,11 @@ def get_jobs(app) -> List[Dict[str, Any]]:
     ]
 
     for job in PHASE1_JOBS:
+        job_copy = dict(job)
+        job_copy["args"] = [ctx]
+        jobs.append(job_copy)
+
+    for job in PHASE2_JOBS:
         job_copy = dict(job)
         job_copy["args"] = [ctx]
         jobs.append(job_copy)

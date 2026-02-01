@@ -1,0 +1,16 @@
+#
+# RELEASE 2026.01.31.00
+# based on CTY-3607
+#
+# ADIF 246
+Sov Mil Order of Malta:   15:  28:  EU:   41.90:   -12.43:    -1.0:  1A:
+    1A;
+# ADIF 260
+Monaco:                   14:  27:  EU:   43.73:    -7.40:    -1.0:  3A:
+    3A;
+# ADIF 4
+Agalega & St. Brandon:    39:  53:  AF:  -10.45:   -56.67:    -4.0:  3B6:
+# Agalega Islands
+    3B6<-10.42/-56.58>,
+# St. Brandon Islands
+    3B7<-16.58/-59.62>;
