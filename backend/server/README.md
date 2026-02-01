@@ -48,6 +48,7 @@ curl -v "http://localhost:8080/fetchIPGeoloc.pl?IP=8.8.8.8"
 - `HAMCLOCK_GEOLOC_PROVIDER` (default: `file`, use `auto` for live lookup)
 - `HAMCLOCK_GEOLOC_TIMEOUT` (default: `5`)
 - `HAMCLOCK_BASE_PATH` (default: `/ham/HamClock`)
+- `HAMCLOCK_RSS_FEEDS` (default: built-in list; eHam URL `https://www.eham.net/rss/news` currently returns 403)
 - `HAMCLOCK_FALLBACK_ENABLED` (default: `0`)
 - `HAMCLOCK_FALLBACK_DIR` (default: `./fallback`)
 - `HAMCLOCK_FALLBACK_BASE_URL` (default: `http://clearskyinstitute.com`)
@@ -79,6 +80,15 @@ When the scheduler is enabled, Phase 2 refresh jobs run automatically:
 - Aurora (`aurora/aurora.txt`)
 - Dst (`dst/dst.txt`)
 - D-RAP stats (`drap/stats.txt`)
+
+## Phase 3 Fetchers (Amateur Radio Data)
+
+When the scheduler is enabled, Phase 3 refresh jobs run automatically:
+
+- ONTA (POTA only) (`ONTA/onta.txt`)
+- RSS headlines (`RSS/web15rss.txt`)
+
+SOTA support remains disabled (use fallback if needed).
 
 ## CLI Flags
 

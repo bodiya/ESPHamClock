@@ -23,6 +23,7 @@ class FetchContext:
     user_agent: str
     hamclock_version: Optional[str] = None
     hamclock_version_info: Optional[str] = None
+    rss_feeds: Optional[List[str]] = None
 
 
 def _atomic_write(path: Path, content: str) -> None:

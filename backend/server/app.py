@@ -12,10 +12,12 @@ from flask import Flask, Response, request
 from .config import default_config
 from .scheduler import start_scheduler
 from .services.geoloc import lookup_ip
+from .services.spots import fetch_pskreporter, fetch_wspr, fetch_rbn
 from .storage import SafePathError, read_binary_and_mtime, read_text_and_mtime
 from .tasks import build_context
 from .fetchers.phase1 import run_phase1, update_cty
 from .fetchers.phase2 import run_phase2
+from .fetchers.phase3 import run_phase3
 from .fallback import fetch_with_cache, setup_fallback_logging
 
 
@@ -209,6 +211,27 @@ def fetch_weather() -> Response:
 
 @app.get("/fetchPSKReporter.pl")
 def fetch_pskreporter() -> Response:
+    maxage = int(request.args.get("maxage", "3600"))
+    query_type = None
+    query_value = None
+    for key in ("bygrid", "ofgrid", "bycall", "ofcall"):
+        if key in request.args:
+            query_type = key
+            query_value = request.args.get(key)
+            break
+
+    if query_type and query_value:
+        content = fetch_pskreporter(
+            data_root=app.config["DATA_ROOT"],
+            user_agent=app.config["FETCHER_USER_AGENT"],
+            timeout=app.config.get("FETCHER_TIMEOUT", 15.0),
+            max_age=maxage,
+            query_type=query_type,
+            query_value=query_value,
+        )
+        if content:
+            return _make_text_response(content, None)
+
     if any(key.startswith("of") for key in request.args.keys()):
         return _serve_text_file("fetchPSKReporter_ofgrid.txt")
     return _serve_text_file("fetchPSKReporter_bygrid.txt")
@@ -216,11 +239,53 @@ def fetch_pskreporter() -> Response:
 
 @app.get("/fetchWSPR.pl")
 def fetch_wspr() -> Response:
+    maxage = int(request.args.get("maxage", "3600"))
+    query_type = None
+    query_value = None
+    for key in ("bygrid", "ofgrid", "bycall", "ofcall"):
+        if key in request.args:
+            query_type = key
+            query_value = request.args.get(key)
+            break
+
+    if query_type and query_value:
+        content = fetch_wspr(
+            data_root=app.config["DATA_ROOT"],
+            user_agent=app.config["FETCHER_USER_AGENT"],
+            timeout=app.config.get("FETCHER_TIMEOUT", 15.0),
+            max_age=maxage,
+            query_type=query_type,
+            query_value=query_value,
+        )
+        if content:
+            return _make_text_response(content, None)
+
     return _serve_text_file("fetchWSPR_bygrid.txt")
 
 
 @app.get("/fetchRBN.pl")
 def fetch_rbn() -> Response:
+    maxage = int(request.args.get("maxage", "3600"))
+    query_type = None
+    query_value = None
+    for key in ("bygrid", "ofgrid", "bycall", "ofcall"):
+        if key in request.args:
+            query_type = key
+            query_value = request.args.get(key)
+            break
+
+    if query_type and query_value:
+        content = fetch_rbn(
+            data_root=app.config["DATA_ROOT"],
+            user_agent=app.config["FETCHER_USER_AGENT"],
+            timeout=app.config.get("FETCHER_TIMEOUT", 15.0),
+            max_age=maxage,
+            query_type=query_type,
+            query_value=query_value,
+        )
+        if content:
+            return _make_text_response(content, None)
+
     return _serve_text_file("fetchRBN_bygrid.txt")
 
 
@@ -279,6 +344,7 @@ def refresh_on_start() -> None:
     ctx = build_context(app)
     run_phase1(ctx)
     run_phase2(ctx)
+    run_phase3(ctx)
 
 
 def _parse_args() -> argparse.Namespace:

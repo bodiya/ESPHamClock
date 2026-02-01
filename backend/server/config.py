@@ -32,4 +32,18 @@ def default_config() -> dict:
         "FALLBACK_BASE_URL": os.environ.get("HAMCLOCK_FALLBACK_BASE_URL", "http://clearskyinstitute.com"),
         "FALLBACK_MAX_AGE": float(os.environ.get("HAMCLOCK_FALLBACK_MAX_AGE", "0")),
         "FALLBACK_LOG_FILE": os.environ.get("HAMCLOCK_FALLBACK_LOG_FILE"),
+        "RSS_FEEDS": [
+            url.strip()
+            for url in os.environ.get(
+                "HAMCLOCK_RSS_FEEDS",
+                (
+                    "http://www.arrl.org/arrl.rss,"
+                    "https://www.dx-world.net/feed/,"
+                    "https://forums.qrz.com/index.php?forums/news-rss.15/index.rss,"
+                    "https://www.arnewsline.org/arnewsline.xml,"
+                    "https://hamweekly.com/ham-news.xml"
+                ),
+            ).split(",")
+            if url.strip()
+        ],
     }

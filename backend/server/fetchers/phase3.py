@@ -1,0 +1,176 @@
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional
+from xml.etree import ElementTree
+
+from .http import fetch_first_ok
+from .phase1 import FetchContext
+
+
+log = logging.getLogger("hamclock-backend.fetchers.phase3")
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    tmp.replace(path)
+
+
+def _parse_time(value: str) -> Optional[datetime]:
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M:%SZ",
+        "%a, %d %b %Y %H:%M:%S %z",
+        "%a, %d %b %Y %H:%M:%S %Z",
+    ):
+        try:
+            dt = datetime.strptime(value, fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+def _coerce_freq_hz(value: Optional[object]) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        freq = float(value)
+    except Exception:
+        return None
+    if freq < 1000:
+        return int(freq * 1_000_000)
+    if freq < 100_000:
+        return int(freq * 1000)
+    return int(freq)
+
+
+def update_onta(ctx: FetchContext) -> bool:
+    url = "https://api.pota.app/spot/activator"
+    data = fetch_first_ok([url], ctx.timeout, ctx.user_agent).content
+    try:
+        spots = __import__("json").loads(data)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("POTA JSON decode failed: %s", exc)
+        return False
+
+    if not isinstance(spots, list):
+        return False
+
+    lines = ["#call,Hz,unix,mode,grid,lat,lng,park,org"]
+    for spot in spots:
+        if not isinstance(spot, dict):
+            continue
+        call = spot.get("activator") or spot.get("activatorCallsign") or spot.get("call") or spot.get("callsign")
+        freq_hz = _coerce_freq_hz(spot.get("frequency") or spot.get("freq") or spot.get("frequency_mhz"))
+        mode = spot.get("mode") or ""
+        grid = spot.get("grid") or spot.get("grid6") or ""
+        lat = spot.get("latitude") or spot.get("lat")
+        lng = spot.get("longitude") or spot.get("lon") or spot.get("lng")
+        park = spot.get("reference") or spot.get("park") or spot.get("locationDesc") or ""
+        time_tag = spot.get("spotTime") or spot.get("timestamp") or spot.get("time")
+        dt = _parse_time(str(time_tag)) if time_tag else None
+        if dt is None and isinstance(time_tag, (int, float)):
+            dt = datetime.fromtimestamp(float(time_tag), tz=timezone.utc)
+
+        if not call or freq_hz is None or dt is None or lat is None or lng is None:
+            continue
+        try:
+            lat_f = float(lat)
+            lng_f = float(lng)
+        except Exception:
+            continue
+
+        lines.append(
+            f"{call},{freq_hz},{int(dt.timestamp())},{mode},{grid},{lat_f:.4f},{lng_f:.4f},{park},POTA"
+        )
+
+    if len(lines) <= 1:
+        return False
+
+    target = ctx.data_root / "ONTA" / "onta.txt"
+    _atomic_write(target, "\n".join(lines) + "\n")
+    return True
+
+
+def _parse_rss_titles(xml_text: str) -> List[Dict[str, str]]:
+    items: List[Dict[str, str]] = []
+    try:
+        root = ElementTree.fromstring(xml_text)
+    except ElementTree.ParseError:
+        return items
+
+    channel = root.find("channel") if root is not None else None
+    source_title = ""
+    if channel is not None:
+        title_el = channel.find("title")
+        if title_el is not None and title_el.text:
+            source_title = title_el.text.strip()
+
+    for item in root.findall(".//item"):
+        title_el = item.find("title")
+        if title_el is None or not title_el.text:
+            continue
+        items.append({"source": source_title, "title": title_el.text.strip()})
+    return items
+
+
+def update_rss(ctx: FetchContext) -> bool:
+    feeds = ctx.rss_feeds or []
+    headlines: List[str] = []
+    seen = set()
+
+    for url in feeds:
+        try:
+            raw = fetch_first_ok([url], ctx.timeout, ctx.user_agent).content
+            items = _parse_rss_titles(raw.decode("utf-8", errors="replace"))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("RSS fetch failed for %s: %s", url, exc)
+            continue
+
+        for item in items:
+            source = item.get("source") or url
+            title = item.get("title")
+            if not title:
+                continue
+            line = f"{source}: {title}"
+            if line in seen:
+                continue
+            seen.add(line)
+            headlines.append(line)
+            if len(headlines) >= 15:
+                break
+        if len(headlines) >= 15:
+            break
+
+    if not headlines:
+        return False
+
+    target = ctx.data_root / "RSS" / "web15rss.txt"
+    _atomic_write(target, "\n".join(headlines) + "\n")
+    return True
+
+
+PHASE3_JOBS = [
+    {"id": "update_onta", "func": update_onta, "trigger": "interval", "minutes": 5, "replace_existing": True},
+    {"id": "update_rss", "func": update_rss, "trigger": "interval", "hours": 1, "replace_existing": True},
+]
+
+
+def run_phase3(ctx: FetchContext) -> None:
+    for job in PHASE3_JOBS:
+        job_name = job.get("id", "phase3")
+        func = job["func"]
+        try:
+            ok = func(ctx)
+            log.info("Phase3 job %s completed: %s", job_name, ok)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Phase3 job %s failed: %s", job_name, exc)

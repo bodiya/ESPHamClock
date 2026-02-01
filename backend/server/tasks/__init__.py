@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 
 from ..fetchers.phase1 import FetchContext, PHASE1_JOBS
 from ..fetchers.phase2 import PHASE2_JOBS
+from ..fetchers.phase3 import PHASE3_JOBS
 
 
 log = logging.getLogger("hamclock-backend.tasks")
@@ -22,6 +23,7 @@ def build_context(app) -> FetchContext:
         user_agent=app.config["FETCHER_USER_AGENT"],
         hamclock_version=app.config.get("HAMCLOCK_VERSION"),
         hamclock_version_info=app.config.get("HAMCLOCK_VERSION_INFO"),
+        rss_feeds=app.config.get("RSS_FEEDS"),
     )
 
 
@@ -43,6 +45,11 @@ def get_jobs(app) -> List[Dict[str, Any]]:
         jobs.append(job_copy)
 
     for job in PHASE2_JOBS:
+        job_copy = dict(job)
+        job_copy["args"] = [ctx]
+        jobs.append(job_copy)
+
+    for job in PHASE3_JOBS:
         job_copy = dict(job)
         job_copy["args"] = [ctx]
         jobs.append(job_copy)
