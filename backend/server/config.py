@@ -16,4 +16,20 @@ def default_config() -> dict:
         "ENABLE_SCHEDULER": os.environ.get("HAMCLOCK_ENABLE_SCHEDULER", "0") == "1",
         "PORT": int(os.environ.get("HAMCLOCK_PORT", "8080")),
         "STRICT_MISSING": os.environ.get("HAMCLOCK_STRICT_MISSING", "0") == "1",
+        "BASE_PATH": os.environ.get("HAMCLOCK_BASE_PATH", "/ham/HamClock"),
+        "FETCHER_USER_AGENT": os.environ.get(
+            "HAMCLOCK_FETCHER_UA", "HamClockBackend/0.1 (+https://example.invalid)"
+        ),
+        "FETCHER_TIMEOUT": float(os.environ.get("HAMCLOCK_FETCHER_TIMEOUT", "15")),
+        "GEOLOC_PROVIDER": os.environ.get("HAMCLOCK_GEOLOC_PROVIDER", "file"),
+        "GEOLOC_TIMEOUT": float(os.environ.get("HAMCLOCK_GEOLOC_TIMEOUT", "5")),
+        "HAMCLOCK_VERSION": os.environ.get("HAMCLOCK_VERSION"),
+        "HAMCLOCK_VERSION_INFO": os.environ.get("HAMCLOCK_VERSION_INFO"),
+        "FALLBACK_ENABLED": os.environ.get("HAMCLOCK_FALLBACK_ENABLED", "0") == "1",
+        "FALLBACK_DIR": Path(os.environ.get("HAMCLOCK_FALLBACK_DIR", "./fallback"))
+        .expanduser()
+        .resolve(),
+        "FALLBACK_BASE_URL": os.environ.get("HAMCLOCK_FALLBACK_BASE_URL", "http://clearskyinstitute.com"),
+        "FALLBACK_MAX_AGE": float(os.environ.get("HAMCLOCK_FALLBACK_MAX_AGE", "0")),
+        "FALLBACK_LOG_FILE": os.environ.get("HAMCLOCK_FALLBACK_LOG_FILE"),
     }

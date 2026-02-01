@@ -14,6 +14,10 @@ pip install -r backend/server/requirements.txt
 export HAMCLOCK_DATA_ROOT=/home/brian/repos/ESPHamClock/backend/gold
 export HAMCLOCK_ENABLE_SCHEDULER=1
 export HAMCLOCK_PORT=8080
+export HAMCLOCK_FETCHER_TIMEOUT=15
+export HAMCLOCK_FETCHER_UA="HamClockBackend/0.1 (+https://example.invalid)"
+export HAMCLOCK_GEOLOC_PROVIDER=auto
+export HAMCLOCK_BASE_PATH=/ham/HamClock
 python -m backend.server.app
 ```
 
@@ -39,6 +43,27 @@ curl -v "http://localhost:8080/fetchIPGeoloc.pl?IP=8.8.8.8"
 - `HAMCLOCK_LOG_LEVEL` (default: `INFO`)
 - `HAMCLOCK_STRICT_MISSING` (default: `0`) return 503 for missing files
 - `HAMCLOCK_PORT` (default: `8080`)
+- `HAMCLOCK_FETCHER_TIMEOUT` (default: `15`)
+- `HAMCLOCK_FETCHER_UA` (default: `HamClockBackend/0.1 (+https://example.invalid)`)
+- `HAMCLOCK_GEOLOC_PROVIDER` (default: `file`, use `auto` for live lookup)
+- `HAMCLOCK_GEOLOC_TIMEOUT` (default: `5`)
+- `HAMCLOCK_BASE_PATH` (default: `/ham/HamClock`)
+- `HAMCLOCK_FALLBACK_ENABLED` (default: `0`)
+- `HAMCLOCK_FALLBACK_DIR` (default: `./fallback`)
+- `HAMCLOCK_FALLBACK_BASE_URL` (default: `http://clearskyinstitute.com`)
+- `HAMCLOCK_FALLBACK_MAX_AGE` (default: `0`, never expire)
+- `HAMCLOCK_FALLBACK_LOG_FILE` (default: unset)
+
+## Phase 1 Fetchers
+
+When the scheduler is enabled, Phase 1 refresh jobs run automatically:
+
+- Cities (`cities2.txt`) from GeoNames (monthly)
+- Prefix/CTY (`cty/cty_wt_mod-ll-dxcc.txt`) from country-files (monthly)
+- Satellites (`esats/esats.txt`) from CelesTrak (every 3 hours)
+- Version (`version.txt`) from `HAMCLOCK_VERSION` env (every 12 hours)
+
+Set `HAMCLOCK_VERSION` and optionally `HAMCLOCK_VERSION_INFO` to control `version.txt`.
 
 ## CLI Flags
 
@@ -47,6 +72,19 @@ curl -v "http://localhost:8080/fetchIPGeoloc.pl?IP=8.8.8.8"
 --port PORT
 --enable-scheduler
 --log-level LEVEL
+--base-path PATH
+--refresh-on-start
+--hamclock-version VERSION
+--hamclock-version-info INFO
+--clearskyinstitute-fallback
+--fallback-dir PATH
+--fallback-base-url URL
+--fallback-max-age SECONDS
+--fallback-log-file PATH
+--fetcher-timeout SECONDS
+--fetcher-ua STRING
+--geoloc-provider NAME
+--geoloc-timeout SECONDS
 --strict-missing
 ```
 

@@ -284,3 +284,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project specific ignores
+fallback/
+backend/test-backend/

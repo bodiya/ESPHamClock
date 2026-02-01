@@ -66,6 +66,7 @@ download_file() {
     local http_code
     http_code=$(curl -s -w "%{http_code}" \
         --max-time "$TIMEOUT" \
+        -A "HamClock-linux/4.22 (id 4138752517 up 277) crc 1" \
         -D "$headerfile" \
         -o "$outfile" \
         "$url" 2>/dev/null) || true
