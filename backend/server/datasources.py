@@ -113,6 +113,27 @@ def _gold_expected(rel_paths: Iterable[Path]) -> Tuple[Optional[int], bool]:
     return None, False
 
 
+def _gold_time_spacing(rel_path: Path, parser: Optional[Callable[[str], Optional[int]]]) -> Optional[int]:
+    if parser is None:
+        return None
+    path = GOLD_ROOT / rel_path
+    if not path.exists():
+        return None
+    try:
+        lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    except Exception:
+        return None
+    times = [parser(line) for line in lines]
+    times = [value for value in times if value is not None]
+    if len(times) < 3:
+        return None
+    deltas = [b - a for a, b in zip(times, times[1:]) if b > a]
+    if not deltas:
+        return None
+    deltas.sort()
+    return int(deltas[len(deltas) // 2])
+
+
 def _build_sources() -> Dict[str, DataSource]:
     sources = [
         DataSource(
@@ -338,6 +359,10 @@ def _build_sources() -> Dict[str, DataSource]:
         if gold_count is not None:
             source.expected_lines = gold_count
             source.expected_lines_exact = exact
+        if source.time_parser and source.derived_paths:
+            gold_spacing = _gold_time_spacing(source.derived_paths[0], source.time_parser)
+            if gold_spacing is not None:
+                source.time_spacing_seconds = gold_spacing
     return {source.name: source for source in sources}
 
 

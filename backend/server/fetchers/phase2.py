@@ -616,7 +616,17 @@ def derive_noaa_scales(ctx: FetchContext) -> bool:
         if isinstance(values, dict):
             forecast = values.get("forecast", [])
             if isinstance(forecast, list) and forecast:
-                return [int(item.get("scale", 0)) for item in forecast[:4]]
+                output: List[int] = []
+                for item in forecast[:4]:
+                    if not isinstance(item, dict):
+                        output.append(0)
+                        continue
+                    scale = item.get("scale")
+                    try:
+                        output.append(int(scale or 0))
+                    except Exception:
+                        output.append(0)
+                return output
         return [0, 0, 0, 0]
 
     r_vals = _extract("R")
