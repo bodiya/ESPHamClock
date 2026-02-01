@@ -49,10 +49,20 @@ curl -v "http://localhost:8080/fetchIPGeoloc.pl?IP=8.8.8.8"
 - `HAMCLOCK_GEOLOC_TIMEOUT` (default: `5`)
 - `HAMCLOCK_BASE_PATH` (default: `/ham/HamClock`)
 - `HAMCLOCK_RSS_FEEDS` (default: built-in list; eHam URL `https://www.eham.net/rss/news` currently returns 403)
+- `HAMCLOCK_GEOCODE_CACHE_DAYS` (default: `30`)
+- `HAMCLOCK_GEOCODE_PROVIDER` (default: `nominatim`)
+- `HAMCLOCK_GEOCODE_BASE_URL` (default: `https://nominatim.openstreetmap.org/reverse`)
+- `HAMCLOCK_GEOCODE_EMAIL` (default: unset, recommended for Nominatim usage)
+- `HAMCLOCK_PROP_ENABLED` (default: `0`)
+- `HAMCLOCK_PROP_ENGINE` (default: `iturhfprop`)
+- `HAMCLOCK_PROP_CLI_PATH` (default: unset)
+- `HAMCLOCK_PROP_CACHE_DIR` (default: `./prop-cache`)
+- `HAMCLOCK_PROP_DATA_DIR` (default: auto-detects snap data dir)
 - `HAMCLOCK_FALLBACK_ENABLED` (default: `0`)
 - `HAMCLOCK_FALLBACK_DIR` (default: `./fallback`)
 - `HAMCLOCK_FALLBACK_BASE_URL` (default: `http://clearskyinstitute.com`)
 - `HAMCLOCK_FALLBACK_LOG_FILE` (default: unset)
+- `HAMCLOCK_FALLBACK_REDIRECT` (default: `0`)
 
 ## Phase 1 Fetchers
 
@@ -89,6 +99,80 @@ When the scheduler is enabled, Phase 3 refresh jobs run automatically:
 
 SOTA support remains disabled (use fallback if needed).
 
+## Phase 4 Fetchers (Weather)
+
+When the scheduler is enabled, Phase 4 refresh jobs run automatically:
+
+- World weather grid (`worldwx/wx.txt`)
+
+`/wx.pl` uses Open-Meteo live when `lat`/`lng` are provided; otherwise it falls back to local files.
+
+## Client Redirect Proxy (for testing 3xx Location responses)
+
+HamClock does not follow HTTP redirects. If you want to test Location-based redirects,
+run the local Python proxy that follows redirects before returning the body to HamClock.
+
+Example:
+```
+python -m venv .venv
+. .venv/bin/activate
+pip install -r backend/client-redirect/requirements.txt
+python backend/client-redirect/redirect_proxy.py --backend http://127.0.0.1:8123 --listen-port 8088
+```
+
+Then start HamClock with:
+```
+-b 127.0.0.1:8088
+```
+
+## Propagation Engine Setup (Phase 5)
+
+We recommend using **ITURHFProp** on Ubuntu because it’s open source and can be
+driven from a CLI, which keeps the backend simple. It is **not** packaged in the
+default Ubuntu apt repositories; use the snap or build from source instead.
+
+Suggested steps (snap):
+
+1) Download the snap package (from the ITU/Proppy distribution)
+```
+iturhfprop_0.1_amd64.snap
+```
+
+2) Install the snap (unsigned)
+```
+sudo snap install --dangerous iturhfprop_0.1_amd64.snap
+```
+
+3) Configure HamClock backend to use it
+```
+export HAMCLOCK_PROP_ENABLED=1
+export HAMCLOCK_PROP_ENGINE=iturhfprop
+export HAMCLOCK_PROP_CLI_PATH=$(which iturhfprop)
+export HAMCLOCK_PROP_CACHE_DIR=/var/lib/hamclock/prop-cache
+export HAMCLOCK_PROP_DATA_DIR=/path/to/iturhfprop/data
+```
+
+Data files:
+- When running from the snap, ITURHFProp data files are at:
+```
+/snap/iturhfprop/current/usr/share/iturhfprop/data/
+```
+
+Alternative (build from source):
+- ITU-R HF source repo:
+```
+https://github.com/ITU-R-Study-Group-3/ITU-R-HF
+```
+
+Notes:
+- The backend will shell out to the CLI when implementing `/fetchBandConditions.pl`
+  and VOACAP map endpoints.
+- You can choose a different engine later (e.g., VOACAP) by changing
+  `HAMCLOCK_PROP_ENGINE` and `HAMCLOCK_PROP_CLI_PATH`.
+- If you use a local ITURHFProp binary with adjacent `libp372.so`/`libp533.so`,
+  the backend will set `LD_LIBRARY_PATH` to include the binary directory when
+  invoking it.
+
 ## CLI Flags
 
 ```
@@ -99,17 +183,25 @@ SOTA support remains disabled (use fallback if needed).
 --base-path PATH
 --refresh-on-start
 --refresh-cty-only
+--update-x-on-start NAME
 --hamclock-version VERSION
 --hamclock-version-info INFO
 --clearskyinstitute-fallback
 --fallback-dir PATH
 --fallback-base-url URL
 --fallback-log-file PATH
+--fallback-redirect
 --fetcher-timeout SECONDS
 --fetcher-ua STRING
 --geoloc-provider NAME
 --geoloc-timeout SECONDS
 --strict-missing
+```
+
+Single-update names for `--update-x-on-start`:
+```
+cities, cty, esats, version, ssn, ssn_history, solar_flux, solar_flux_history,
+kindex, xray, solar_wind, bz, noaa_scales, aurora, dst, drap, onta, rss, worldwx
 ```
 
 ## Nginx Reverse Proxy (example)

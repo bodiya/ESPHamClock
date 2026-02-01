@@ -1,0 +1,11 @@
+:Product: 27-day Space Weather Outlook Table
+:Issued: 2026 Feb 02 0054 UTC
+# Prepared by the U.S. Dept. of Commerce, NOAA, Space Weather Prediction Center
+#              27 Day Space Weather Outlook Table
+#
+#                      F10.7    AP    AP
+# Date            Carrington   (10.7)  (Daily)
+
+2026 Feb 02  206  200  200  200  200  200  200  210  210  200  200  190  180
+2026 Feb 03  198  190  190  190  190  190  180  190  200  190  190  200  200
+2026 Feb 04  180  180  180  180  180  170  170  160  160  160  160  160  160

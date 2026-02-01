@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -27,6 +28,17 @@ def _write_cache(path: Path, data: bytes) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_bytes(data)
     tmp.replace(path)
+
+
+def _read_text(path: Path, max_age_seconds: float) -> Optional[str]:
+    raw = _read_cache(path, max_age_seconds)
+    if raw is None:
+        return None
+    return raw.decode("utf-8", errors="replace")
+
+
+def _write_text(path: Path, content: str) -> None:
+    _write_cache(path, content.encode("utf-8"))
 from .phase1 import FetchContext
 
 
@@ -41,13 +53,16 @@ def _atomic_write(path: Path, content: str) -> None:
 
 
 def _parse_time(value: str) -> Optional[datetime]:
+    value = value.strip()
+    for suffix in (" UTC", "Z"):
+        if value.endswith(suffix):
+            value = value[: -len(suffix)]
+            break
     for fmt in (
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d %H:%M:%S.%f",
         "%Y-%m-%dT%H:%M:%S",
         "%Y-%m-%dT%H:%M:%S.%f",
-        "%Y-%m-%dT%H:%M:%SZ",
-        "%Y-%m-%dT%H:%M:%S.%fZ",
     ):
         try:
             return datetime.strptime(value, fmt).replace(tzinfo=timezone.utc)
@@ -71,13 +86,20 @@ def _tail(items: List, count: int) -> List:
     return items[-count:]
 
 
-def _load_daily_solar_indices(ctx: FetchContext) -> List[Tuple[datetime, float, float]]:
+def ingest_daily_solar_indices(ctx: FetchContext) -> bool:
     url = "https://services.swpc.noaa.gov/text/daily-solar-indices.txt"
+    raw_dir = ctx.data_root / "raw" / "solar"
+    raw_dir.mkdir(parents=True, exist_ok=True)
     try:
-        raw = fetch_first_ok([url], ctx.timeout, ctx.user_agent).content.decode("utf-8", errors="replace")
+        raw = fetch_first_ok([url], ctx.timeout, ctx.user_agent).content
     except Exception as exc:  # noqa: BLE001
-        log.warning("daily-solar-indices fetch failed: %s", exc)
-        return []
+        log.warning("daily-solar-indices ingest failed: %s", exc)
+        return False
+    _write_cache(raw_dir / "daily-solar-indices.txt", raw)
+    return True
+
+
+def _parse_daily_solar_indices(raw: str) -> List[Tuple[datetime, float, float]]:
     rows: List[Tuple[datetime, float, float]] = []
     for line in raw.splitlines():
         line = line.strip()
@@ -99,7 +121,21 @@ def _load_daily_solar_indices(ctx: FetchContext) -> List[Tuple[datetime, float, 
     return rows
 
 
-def update_ssn(ctx: FetchContext) -> bool:
+def _load_daily_solar_indices(ctx: FetchContext) -> List[Tuple[datetime, float, float]]:
+    raw_path = ctx.data_root / "raw" / "solar" / "daily-solar-indices.txt"
+    raw = _read_text(raw_path, max_age_seconds=0)
+    if raw is None:
+        return []
+    return _parse_daily_solar_indices(raw)
+
+
+def ingest_solar_indices(ctx: FetchContext) -> bool:
+    ok = ingest_daily_solar_indices(ctx)
+    ok_outlook = ingest_27_day_outlook(ctx)
+    return ok or ok_outlook
+
+
+def derive_ssn(ctx: FetchContext) -> bool:
     rows = _load_daily_solar_indices(ctx)
     if not rows:
         return False
@@ -110,7 +146,7 @@ def update_ssn(ctx: FetchContext) -> bool:
     return True
 
 
-def update_ssn_history(ctx: FetchContext) -> bool:
+def derive_ssn_history(ctx: FetchContext) -> bool:
     rows = _load_daily_solar_indices(ctx)
     if not rows:
         return False
@@ -130,13 +166,20 @@ def update_ssn_history(ctx: FetchContext) -> bool:
     return True
 
 
-def _load_27_day_outlook(ctx: FetchContext) -> List[float]:
+def ingest_27_day_outlook(ctx: FetchContext) -> bool:
     url = "https://services.swpc.noaa.gov/text/27-day-outlook.txt"
+    raw_dir = ctx.data_root / "raw" / "solar"
+    raw_dir.mkdir(parents=True, exist_ok=True)
     try:
-        raw = fetch_first_ok([url], ctx.timeout, ctx.user_agent).content.decode("utf-8", errors="replace")
+        raw = fetch_first_ok([url], ctx.timeout, ctx.user_agent).content
     except Exception as exc:  # noqa: BLE001
-        log.warning("27-day outlook fetch failed: %s", exc)
-        return []
+        log.warning("27-day outlook ingest failed: %s", exc)
+        return False
+    _write_cache(raw_dir / "27-day-outlook.txt", raw)
+    return True
+
+
+def _parse_27_day_outlook(raw: str) -> List[float]:
     values: List[float] = []
     for line in raw.splitlines():
         line = line.strip()
@@ -152,7 +195,15 @@ def _load_27_day_outlook(ctx: FetchContext) -> List[float]:
     return values
 
 
-def update_solar_flux(ctx: FetchContext) -> bool:
+def _load_27_day_outlook(ctx: FetchContext) -> List[float]:
+    raw_path = ctx.data_root / "raw" / "solar" / "27-day-outlook.txt"
+    raw = _read_text(raw_path, max_age_seconds=0)
+    if raw is None:
+        return []
+    return _parse_27_day_outlook(raw)
+
+
+def derive_solar_flux(ctx: FetchContext) -> bool:
     rows = _load_daily_solar_indices(ctx)
     if not rows:
         return False
@@ -171,7 +222,7 @@ def update_solar_flux(ctx: FetchContext) -> bool:
     return True
 
 
-def update_solar_flux_history(ctx: FetchContext) -> bool:
+def derive_solar_flux_history(ctx: FetchContext) -> bool:
     rows = _load_daily_solar_indices(ctx)
     if not rows:
         return False
@@ -191,9 +242,57 @@ def update_solar_flux_history(ctx: FetchContext) -> bool:
     return True
 
 
-def update_kindex(ctx: FetchContext) -> bool:
-    urls = ["https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"]
-    data = _load_json(urls, ctx)
+def update_ssn(ctx: FetchContext) -> bool:
+    ok = ingest_daily_solar_indices(ctx)
+    if not ok:
+        log.warning("ssn ingest failed; attempting derive from existing raw")
+    return derive_ssn(ctx)
+
+
+def update_ssn_history(ctx: FetchContext) -> bool:
+    ok = ingest_daily_solar_indices(ctx)
+    if not ok:
+        log.warning("ssn_history ingest failed; attempting derive from existing raw")
+    return derive_ssn_history(ctx)
+
+
+def update_solar_flux(ctx: FetchContext) -> bool:
+    ok = ingest_solar_indices(ctx)
+    if not ok:
+        log.warning("solar_flux ingest failed; attempting derive from existing raw")
+    return derive_solar_flux(ctx)
+
+
+def update_solar_flux_history(ctx: FetchContext) -> bool:
+    ok = ingest_daily_solar_indices(ctx)
+    if not ok:
+        log.warning("solar_flux_history ingest failed; attempting derive from existing raw")
+    return derive_solar_flux_history(ctx)
+
+
+def ingest_kindex(ctx: FetchContext) -> bool:
+    url = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
+    raw_dir = ctx.data_root / "raw" / "geomag"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        result = fetch_first_ok([url], ctx.timeout, ctx.user_agent)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("kindex ingest failed: %s", exc)
+        return False
+    _write_cache(raw_dir / "noaa-planetary-k-index.json", result.content)
+    return True
+
+
+def derive_kindex(ctx: FetchContext) -> bool:
+    raw_path = ctx.data_root / "raw" / "geomag" / "noaa-planetary-k-index.json"
+    raw = _read_cache(raw_path, max_age_seconds=0)
+    if raw is None:
+        return False
+    try:
+        data = json.loads(raw)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("kindex decode failed: %s", exc)
+        return False
     if not isinstance(data, list) or len(data) < 2:
         return False
 
@@ -227,20 +326,62 @@ def update_kindex(ctx: FetchContext) -> bool:
     return True
 
 
+def update_kindex(ctx: FetchContext) -> bool:
+    ok = ingest_kindex(ctx)
+    if not ok:
+        log.warning("kindex ingest failed; attempting derive from existing raw")
+    return derive_kindex(ctx)
+
+
 def update_xray(ctx: FetchContext) -> bool:
+    ok = ingest_xray(ctx)
+    if not ok:
+        log.warning("xray ingest failed; attempting to derive from existing raw")
+    return derive_xray(ctx)
+
+
+def ingest_xray(ctx: FetchContext) -> bool:
     url = "https://services.swpc.noaa.gov/json/goes/primary/xrays-7-day.json"
-    cache_path = ctx.data_root / "xray" / "xrays-7-day.json"
-    cached = _read_cache(cache_path, max_age_seconds=300)
-    if cached is None:
-        result = fetch_first_ok([url], ctx.timeout, ctx.user_agent)
-        cached = result.content
-        _write_cache(cache_path, cached)
     try:
-        data = json.loads(cached)
+        result = fetch_first_ok([url], ctx.timeout, ctx.user_agent)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("xray ingest failed: %s", exc)
+        return False
+    raw_path = ctx.data_root / "raw" / "xray" / "xrays-7-day.json"
+    _write_cache(raw_path, result.content)
+    # legacy cache location for backward compatibility
+    legacy_path = ctx.data_root / "xray" / "xrays-7-day.json"
+    _write_cache(legacy_path, result.content)
+    return True
+
+
+def _load_xray_raw(ctx: FetchContext) -> Optional[list]:
+    raw_paths = [
+        ctx.data_root / "raw" / "xray" / "xrays-7-day.json",
+        ctx.data_root / "xray" / "xrays-7-day.json",
+    ]
+    raw = None
+    for path in raw_paths:
+        cached = _read_cache(path, max_age_seconds=0)
+        if cached is not None:
+            raw = cached
+            break
+    if raw is None:
+        return None
+    try:
+        data = json.loads(raw)
     except Exception as exc:
-        log.warning("xray cache decode failed: %s", exc)
-        data = _load_json([url], ctx)
+        log.warning("xray raw decode failed: %s", exc)
+        return None
     if not isinstance(data, list) or not data:
+        return None
+    return data
+
+
+def derive_xray(ctx: FetchContext) -> bool:
+    data = _load_xray_raw(ctx)
+    if data is None:
+        log.warning("xray derive missing raw data")
         return False
 
     short_band: Dict[str, float] = {}
@@ -294,12 +435,29 @@ def update_xray(ctx: FetchContext) -> bool:
     return True
 
 
-def update_solar_wind(ctx: FetchContext) -> bool:
-    urls = [
-        "https://services.swpc.noaa.gov/products/solar-wind/plasma-7-day.json",
-        "https://services.swpc.noaa.gov/json/dscovr/dscovr_plasma_5m.json",
-    ]
-    data = _load_json(urls, ctx)
+def ingest_solar_wind(ctx: FetchContext) -> bool:
+    url = "https://services.swpc.noaa.gov/products/solar-wind/plasma-7-day.json"
+    raw_dir = ctx.data_root / "raw" / "solar-wind"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        result = fetch_first_ok([url], ctx.timeout, ctx.user_agent)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("solar wind ingest failed: %s", exc)
+        return False
+    _write_cache(raw_dir / "plasma-7-day.json", result.content)
+    return True
+
+
+def derive_solar_wind(ctx: FetchContext) -> bool:
+    raw_path = ctx.data_root / "raw" / "solar-wind" / "plasma-7-day.json"
+    raw = _read_cache(raw_path, max_age_seconds=0)
+    if raw is None:
+        return False
+    try:
+        data = json.loads(raw)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("solar wind decode failed: %s", exc)
+        return False
     if not isinstance(data, list) or len(data) < 2:
         return False
 
@@ -341,12 +499,36 @@ def update_solar_wind(ctx: FetchContext) -> bool:
     return True
 
 
-def update_bz(ctx: FetchContext) -> bool:
-    urls = [
-        "https://services.swpc.noaa.gov/products/solar-wind/mag-7-day.json",
-        "https://services.swpc.noaa.gov/json/dscovr/dscovr_mag_5m.json",
-    ]
-    data = _load_json(urls, ctx)
+def update_solar_wind(ctx: FetchContext) -> bool:
+    ok = ingest_solar_wind(ctx)
+    if not ok:
+        log.warning("solar_wind ingest failed; attempting derive from existing raw")
+    return derive_solar_wind(ctx)
+
+
+def ingest_bz(ctx: FetchContext) -> bool:
+    url = "https://services.swpc.noaa.gov/products/solar-wind/mag-7-day.json"
+    raw_dir = ctx.data_root / "raw" / "solar-wind"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        result = fetch_first_ok([url], ctx.timeout, ctx.user_agent)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("bz ingest failed: %s", exc)
+        return False
+    _write_cache(raw_dir / "mag-7-day.json", result.content)
+    return True
+
+
+def derive_bz(ctx: FetchContext) -> bool:
+    raw_path = ctx.data_root / "raw" / "solar-wind" / "mag-7-day.json"
+    raw = _read_cache(raw_path, max_age_seconds=0)
+    if raw is None:
+        return False
+    try:
+        data = json.loads(raw)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("bz decode failed: %s", exc)
+        return False
     if not isinstance(data, list) or len(data) < 2:
         return False
 
@@ -396,9 +578,36 @@ def update_bz(ctx: FetchContext) -> bool:
     return True
 
 
-def update_noaa_scales(ctx: FetchContext) -> bool:
+def update_bz(ctx: FetchContext) -> bool:
+    ok = ingest_bz(ctx)
+    if not ok:
+        log.warning("bz ingest failed; attempting derive from existing raw")
+    return derive_bz(ctx)
+
+
+def ingest_noaa_scales(ctx: FetchContext) -> bool:
     url = "https://services.swpc.noaa.gov/products/noaa-scales.json"
-    data = _load_json([url], ctx)
+    raw_dir = ctx.data_root / "raw" / "NOAASpaceWX"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        result = fetch_first_ok([url], ctx.timeout, ctx.user_agent)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("noaa scales ingest failed: %s", exc)
+        return False
+    _write_cache(raw_dir / "noaa-scales.json", result.content)
+    return True
+
+
+def derive_noaa_scales(ctx: FetchContext) -> bool:
+    raw_path = ctx.data_root / "raw" / "NOAASpaceWX" / "noaa-scales.json"
+    raw = _read_cache(raw_path, max_age_seconds=0)
+    if raw is None:
+        return False
+    try:
+        data = json.loads(raw)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("noaa scales decode failed: %s", exc)
+        return False
     if not isinstance(data, dict):
         return False
 
@@ -425,65 +634,296 @@ def update_noaa_scales(ctx: FetchContext) -> bool:
     return True
 
 
+def update_noaa_scales(ctx: FetchContext) -> bool:
+    ok = ingest_noaa_scales(ctx)
+    if not ok:
+        log.warning("noaa_scales ingest failed; attempting derive from existing raw")
+    return derive_noaa_scales(ctx)
+
+
 def update_aurora(ctx: FetchContext) -> bool:
-    urls = [
-        "https://services.swpc.noaa.gov/json/ovation_aurora_latest.json",
-        "https://services.swpc.noaa.gov/products/aurora-30-minute-forecast.json",
-    ]
-    data = _load_json(urls, ctx)
-    lines: List[str] = []
+    ok = ingest_aurora(ctx)
+    if not ok:
+        log.warning("aurora ingest failed; attempting to derive from existing raw")
+    return derive_aurora(ctx)
 
-    if isinstance(data, list) and data:
-        header = data[0]
-        rows = data[1:]
-        time_idx = None
-        value_idx = None
-        if isinstance(header, list):
-            for i, name in enumerate(header):
-                lname = str(name).lower()
-                if lname in ("time_tag", "forecast_time"):
-                    time_idx = i
-                elif lname in ("value", "kp", "forecast"):
-                    value_idx = i
-        if time_idx is not None and value_idx is not None:
-            for row in rows:
-                if not isinstance(row, list) or len(row) <= max(time_idx, value_idx):
-                    continue
-                dt = _parse_time(str(row[time_idx]))
-                if dt is None:
-                    continue
-                try:
-                    value = float(row[value_idx])
-                except Exception:
-                    continue
-                lines.append(f"{int(dt.timestamp())} {value:.0f}")
 
-    if not lines and isinstance(data, dict):
-        coords = data.get("coordinates") or data.get("data")
-        time_tag = data.get("Forecast Time") or data.get("Observation Time") or data.get("time_tag")
-        dt = _parse_time(str(time_tag)) if time_tag else None
-        if isinstance(coords, list) and dt is not None:
-            values = []
-            for item in coords:
-                if isinstance(item, list) and len(item) >= 3:
-                    try:
-                        values.append(float(item[2]))
-                    except Exception:
-                        continue
-            if values:
-                lines.append(f"{int(dt.timestamp())} {max(values):.0f}")
+def _get_key_ci(obj: Dict, names: List[str]):
+    lookup = {str(k).lower().replace("_", " ").strip(): k for k in obj.keys()}
+    for name in names:
+        key = lookup.get(name.lower().replace("_", " ").strip())
+        if key is not None:
+            return obj.get(key)
+    return None
 
-    if not lines:
+
+def _parse_aurora_forecast_list(data_obj) -> List[Tuple[int, float]]:
+    parsed: List[Tuple[int, float]] = []
+    if not isinstance(data_obj, list) or not data_obj:
+        return parsed
+    header = data_obj[0]
+    rows = data_obj[1:]
+    time_idx = 0
+    value_idx = 1
+    if isinstance(header, list) and header and all(isinstance(x, str) for x in header):
+        for i, name in enumerate(header):
+            lname = name.lower()
+            if "time" in lname:
+                time_idx = i
+            if "forecast" in lname or "value" in lname or "kp" in lname:
+                value_idx = i
+    for row in rows:
+        if not isinstance(row, list) or len(row) <= max(time_idx, value_idx):
+            continue
+        dt = _parse_time(str(row[time_idx]))
+        if dt is None:
+            continue
+        try:
+            value = float(row[value_idx])
+        except Exception:
+            continue
+        parsed.append((int(dt.timestamp()), value))
+    return parsed
+
+
+def _parse_aurora_hemi_power(raw_text: str) -> List[Tuple[int, float]]:
+    parsed: List[Tuple[int, float]] = []
+    normalized = raw_text.replace("\r", "\n")
+    for line in normalized.splitlines():
+        line = line.strip()
+        if not line or not line[0].isdigit():
+            continue
+        dt = None
+        rest = ""
+        match = re.match(
+            r"(\\d{4})[-/](\\d{1,2})[-/](\\d{1,2})[ T]+(\\d{2}):?(\\d{2})(?::?(\\d{2}))?",
+            line,
+        )
+        if match:
+            year, month, day, hour, minute, second = match.groups()
+            dt = datetime(
+                int(year),
+                int(month),
+                int(day),
+                int(hour),
+                int(minute),
+                int(second or 0),
+                tzinfo=timezone.utc,
+            )
+            rest = line[match.end() :]
+        else:
+            match = re.match(r"(\\d{4})\\s+(\\d{1,2})\\s+(\\d{1,2})\\s+(\\d{4})", line)
+            if match:
+                year, month, day, hhmm = match.groups()
+                hour = int(hhmm[:2])
+                minute = int(hhmm[2:])
+                dt = datetime(int(year), int(month), int(day), hour, minute, tzinfo=timezone.utc)
+                rest = line[match.end() :]
+        if dt is None:
+            continue
+        values = [
+            float(val)
+            for val in re.findall(r"[-+]?\\d+(?:\\.\\d+)?(?:[eE][-+]?\\d+)?", rest)
+        ]
+        if not values:
+            continue
+        parsed.append((int(dt.timestamp()), max(values)))
+    return parsed
+
+
+def ingest_aurora(ctx: FetchContext) -> bool:
+    hemi_power_url = "https://services.swpc.noaa.gov/text/aurora-nowcast-hemi-power.txt"
+    forecast_url = "https://services.swpc.noaa.gov/products/aurora-30-minute-forecast.json"
+    ovation_url = "https://services.swpc.noaa.gov/json/ovation_aurora_latest.json"
+    raw_dir = ctx.data_root / "raw" / "aurora"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        result = fetch_first_ok([hemi_power_url], ctx.timeout, ctx.user_agent)
+        (raw_dir / "hemi-power.txt").write_bytes(result.content)
+        (raw_dir / "source.txt").write_text("hemi_power", encoding="utf-8")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.warning("aurora hemi-power ingest failed: %s", exc)
+
+    data = _load_json([forecast_url], ctx)
+    if data is not None:
+        try:
+            (raw_dir / "forecast.json").write_text(json.dumps(data), encoding="utf-8")
+            (raw_dir / "source.txt").write_text("forecast", encoding="utf-8")
+            return True
+        except Exception:  # noqa: BLE001
+            pass
+
+    data = _load_json([ovation_url], ctx)
+    if data is not None:
+        try:
+            (raw_dir / "ovation.json").write_text(json.dumps(data), encoding="utf-8")
+            (raw_dir / "source.txt").write_text("ovation", encoding="utf-8")
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+    return False
+
+
+def _load_aurora_source(ctx: FetchContext) -> Tuple[Optional[str], Optional[bytes]]:
+    raw_dir = ctx.data_root / "raw" / "aurora"
+    source_path = raw_dir / "source.txt"
+    source = None
+    if source_path.exists():
+        source = source_path.read_text(encoding="utf-8", errors="replace").strip()
+    if source == "hemi_power":
+        path = raw_dir / "hemi-power.txt"
+        if path.exists():
+            return source, path.read_bytes()
+    if source == "forecast":
+        path = raw_dir / "forecast.json"
+        if path.exists():
+            return source, path.read_bytes()
+    if source == "ovation":
+        path = raw_dir / "ovation.json"
+        if path.exists():
+            return source, path.read_bytes()
+
+    for fallback in ("hemi-power.txt", "forecast.json", "ovation.json"):
+        path = raw_dir / fallback
+        if path.exists():
+            content = path.read_bytes()
+            if fallback.endswith(".txt"):
+                return "hemi_power", content
+            if fallback.startswith("forecast"):
+                return "forecast", content
+            return "ovation", content
+    return None, None
+
+
+def derive_aurora(ctx: FetchContext) -> bool:
+    source, raw = _load_aurora_source(ctx)
+    if not source or raw is None:
+        log.warning("aurora derive missing raw data")
         return False
+
+    points: List[Tuple[int, float]] = []
+    if source == "hemi_power":
+        points = _parse_aurora_hemi_power(raw.decode("utf-8", errors="replace"))
+    elif source == "forecast":
+        try:
+            data = json.loads(raw)
+        except Exception as exc:
+            log.warning("aurora forecast decode failed: %s", exc)
+            data = None
+        points = _parse_aurora_forecast_list(data)
+    elif source == "ovation":
+        try:
+            data = json.loads(raw)
+        except Exception as exc:
+            log.warning("aurora ovation decode failed: %s", exc)
+            data = None
+        if isinstance(data, dict):
+            coords = _get_key_ci(data, ["coordinates", "data", "coords"])
+            time_tag = _get_key_ci(data, ["observation time", "forecast time", "time_tag", "time"])
+            dt = _parse_time(str(time_tag)) if time_tag else None
+            if isinstance(coords, list):
+                values = []
+                for item in coords:
+                    if isinstance(item, list) and len(item) >= 3:
+                        try:
+                            values.append(float(item[-1]))
+                        except Exception:
+                            continue
+                if values:
+                    ts = int((dt or datetime.now(timezone.utc)).timestamp())
+                    points.append((ts, max(values)))
+
+    if not points:
+        log.warning("aurora derive yielded no points from %s", source)
+        return False
+
+    if source == "ovation" and len(points) == 1:
+        target = ctx.data_root / "aurora" / "aurora.txt"
+        existing: List[Tuple[int, float]] = []
+        if target.exists():
+            try:
+                for line in target.read_text(encoding="utf-8").splitlines():
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        existing.append((int(parts[0]), float(parts[1])))
+            except Exception:
+                existing = []
+        ts_new, value = points[0]
+        if existing and existing[-1][0] == ts_new:
+            existing[-1] = (ts_new, value)
+        else:
+            existing.append((ts_new, value))
+        points = existing
+
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    unique: Dict[int, float] = {}
+    for ts, pct in points:
+        if ts <= now_ts:
+            unique[ts] = pct
+    points = sorted(unique.items(), key=lambda item: item[0])
+    if not points:
+        return False
+
+    if len(points) > 100:
+        buckets: Dict[int, Tuple[int, float]] = {}
+        for ts, pct in points:
+            bucket = ts - (ts % 1800)
+            prev = buckets.get(bucket)
+            if prev is None or ts >= prev[0]:
+                buckets[bucket] = (ts, pct)
+        points = sorted(buckets.values(), key=lambda item: item[0])
+
+    if len(points) < 48:
+        if source == "ovation" and len(points) > 1:
+            first_ts, first_pct = points[0]
+            missing = 48 - len(points)
+            padded = []
+            for i in range(missing, 0, -1):
+                ts = first_ts - i * 1800
+                padded.append((ts, first_pct))
+            points = padded + points
+        else:
+            latest_ts, latest_pct = points[-1]
+            synthesized = []
+            for i in range(48):
+                ts = latest_ts - (47 - i) * 1800
+                synthesized.append((ts, latest_pct))
+            points = synthesized
+    elif len(points) > 48:
+        points = points[-48:]
+
+    lines = [f"{ts} {pct:.0f}" for ts, pct in points]
 
     target = ctx.data_root / "aurora" / "aurora.txt"
     _atomic_write(target, "\n".join(lines) + "\n")
     return True
 
 
-def update_dst(ctx: FetchContext) -> bool:
+def ingest_dst(ctx: FetchContext) -> bool:
     url = "https://services.swpc.noaa.gov/products/kyoto-dst.json"
-    data = _load_json([url], ctx)
+    raw_dir = ctx.data_root / "raw" / "dst"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        result = fetch_first_ok([url], ctx.timeout, ctx.user_agent)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("dst ingest failed: %s", exc)
+        return False
+    _write_cache(raw_dir / "kyoto-dst.json", result.content)
+    return True
+
+
+def derive_dst(ctx: FetchContext) -> bool:
+    raw_path = ctx.data_root / "raw" / "dst" / "kyoto-dst.json"
+    raw = _read_cache(raw_path, max_age_seconds=0)
+    if raw is None:
+        return False
+    try:
+        data = json.loads(raw)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("dst decode failed: %s", exc)
+        return False
     lines: List[str] = []
     if isinstance(data, list) and data:
         header = data[0]
@@ -532,6 +972,13 @@ def update_dst(ctx: FetchContext) -> bool:
     return True
 
 
+def update_dst(ctx: FetchContext) -> bool:
+    ok = ingest_dst(ctx)
+    if not ok:
+        log.warning("dst ingest failed; attempting derive from existing raw")
+    return derive_dst(ctx)
+
+
 def _flatten_values(obj) -> List[float]:
     values: List[float] = []
     if isinstance(obj, list):
@@ -542,9 +989,29 @@ def _flatten_values(obj) -> List[float]:
     return values
 
 
-def update_drap(ctx: FetchContext) -> bool:
+def ingest_drap(ctx: FetchContext) -> bool:
     url = "https://services.swpc.noaa.gov/products/animations/d-rap/global.json"
-    data = _load_json([url], ctx)
+    raw_dir = ctx.data_root / "raw" / "drap"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        result = fetch_first_ok([url], ctx.timeout, ctx.user_agent)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("drap ingest failed: %s", exc)
+        return False
+    _write_cache(raw_dir / "global.json", result.content)
+    return True
+
+
+def derive_drap(ctx: FetchContext) -> bool:
+    raw_path = ctx.data_root / "raw" / "drap" / "global.json"
+    raw = _read_cache(raw_path, max_age_seconds=0)
+    if raw is None:
+        return False
+    try:
+        data = json.loads(raw)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("drap decode failed: %s", exc)
+        return False
     lines: List[str] = []
 
     def _emit_from_entry(entry: dict) -> None:
@@ -574,6 +1041,13 @@ def update_drap(ctx: FetchContext) -> bool:
     target = ctx.data_root / "drap" / "stats.txt"
     _atomic_write(target, "\n".join(lines) + "\n")
     return True
+
+
+def update_drap(ctx: FetchContext) -> bool:
+    ok = ingest_drap(ctx)
+    if not ok:
+        log.warning("drap ingest failed; attempting derive from existing raw")
+    return derive_drap(ctx)
 
 
 PHASE2_JOBS = [

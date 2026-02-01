@@ -31,6 +31,7 @@ def default_config() -> dict:
         .resolve(),
         "FALLBACK_BASE_URL": os.environ.get("HAMCLOCK_FALLBACK_BASE_URL", "http://clearskyinstitute.com"),
         "FALLBACK_LOG_FILE": os.environ.get("HAMCLOCK_FALLBACK_LOG_FILE"),
+        "FALLBACK_REDIRECT": os.environ.get("HAMCLOCK_FALLBACK_REDIRECT", "0") == "1",
         "RSS_FEEDS": [
             url.strip()
             for url in os.environ.get(
@@ -45,4 +46,17 @@ def default_config() -> dict:
             ).split(",")
             if url.strip()
         ],
+        "GEOCODE_CACHE_DAYS": int(os.environ.get("HAMCLOCK_GEOCODE_CACHE_DAYS", "30")),
+        "GEOCODE_PROVIDER": os.environ.get("HAMCLOCK_GEOCODE_PROVIDER", "nominatim"),
+        "GEOCODE_BASE_URL": os.environ.get(
+            "HAMCLOCK_GEOCODE_BASE_URL", "https://nominatim.openstreetmap.org/reverse"
+        ),
+        "GEOCODE_EMAIL": os.environ.get("HAMCLOCK_GEOCODE_EMAIL"),
+        "PROP_ENABLED": os.environ.get("HAMCLOCK_PROP_ENABLED", "0") == "1",
+        "PROP_ENGINE": os.environ.get("HAMCLOCK_PROP_ENGINE", "iturhfprop"),
+        "PROP_CLI_PATH": os.environ.get("HAMCLOCK_PROP_CLI_PATH"),
+        "PROP_CACHE_DIR": Path(os.environ.get("HAMCLOCK_PROP_CACHE_DIR", "./prop-cache"))
+        .expanduser()
+        .resolve(),
+        "PROP_DATA_DIR": os.environ.get("HAMCLOCK_PROP_DATA_DIR"),
     }

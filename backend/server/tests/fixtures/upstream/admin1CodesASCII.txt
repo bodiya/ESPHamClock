@@ -1,0 +1,2 @@
+US.MA	Massachusetts	Massachusetts		
+FR.11	Ile-de-France	Ile-de-France		

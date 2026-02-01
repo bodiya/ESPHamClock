@@ -1,0 +1,4 @@
+[
+  {"spotId":87563524,"spotTime":"2026-02-02T00:48:13.000Z","activator":"DM1RB","frequency":7074,"mode":"FT8","reference":"DE-0267","locationDesc":"BAVARIAN FOREST NATIONAL PARK","parkName":"Bavarian Forest National Park","spotter":"DM1RB","comments":"Direct","source":"RBN","invalid":0,"name":"Bavarian Forest National Park","locationName":"BAVARIAN FOREST NATIONAL PARK","grid4":"JO40","grid6":"JO40mp","latitude":49.125022,"longitude":13.152401,"count":3},
+  {"spotId":87563508,"spotTime":"2026-02-02T00:47:25.000Z","activator":"K5XW","frequency":1838,"mode":"CW","reference":"US-0134","locationDesc":"BIG BEND NATIONAL PARK","parkName":"Big Bend National Park","spotter":"K5XW","comments":"CQ","source":"RBN","invalid":0,"name":"Big Bend National Park","locationName":"BIG BEND NATIONAL PARK","grid4":"DL90","grid6":"DL90gc","latitude":29.237395,"longitude":-103.291359,"count":2}
+]

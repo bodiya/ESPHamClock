@@ -24,6 +24,15 @@ class FetchContext:
     hamclock_version: Optional[str] = None
     hamclock_version_info: Optional[str] = None
     rss_feeds: Optional[List[str]] = None
+    geocode_cache_days: int = 30
+    geocode_provider: str = "nominatim"
+    geocode_base_url: str = "https://nominatim.openstreetmap.org/reverse"
+    geocode_email: Optional[str] = None
+    prop_enabled: bool = False
+    prop_engine: str = "iturhfprop"
+    prop_cli_path: Optional[str] = None
+    prop_cache_dir: Optional[Path] = None
+    prop_data_dir: Optional[str] = None
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -96,19 +105,53 @@ def _render_city_line(
     return f"{lat:.4f}, {lng:.4f}, \"{location}. Pop {pop_label}\""
 
 
-def update_cities(ctx: FetchContext) -> bool:
+def ingest_cities(ctx: FetchContext) -> bool:
     cities_url = "https://download.geonames.org/export/dump/cities15000.zip"
     admin1_url = "https://download.geonames.org/export/dump/admin1CodesASCII.txt"
     country_url = "https://download.geonames.org/export/dump/countryInfo.txt"
 
-    cities_zip = fetch_first_ok([cities_url], ctx.timeout, ctx.user_agent).content
-    admin1_raw = fetch_first_ok([admin1_url], ctx.timeout, ctx.user_agent).content.decode("utf-8")
-    country_raw = fetch_first_ok([country_url], ctx.timeout, ctx.user_agent).content.decode("utf-8")
+    raw_dir = ctx.data_root / "raw" / "cities"
+    raw_dir.mkdir(parents=True, exist_ok=True)
 
+    try:
+        cities_zip = fetch_first_ok([cities_url], ctx.timeout, ctx.user_agent).content
+        (raw_dir / "cities15000.zip").write_bytes(cities_zip)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Cities ingest failed (cities15000.zip): %s", exc)
+        return False
+
+    try:
+        admin1_raw = fetch_first_ok([admin1_url], ctx.timeout, ctx.user_agent).content
+        (raw_dir / "admin1CodesASCII.txt").write_bytes(admin1_raw)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Cities ingest failed (admin1CodesASCII.txt): %s", exc)
+        return False
+
+    try:
+        country_raw = fetch_first_ok([country_url], ctx.timeout, ctx.user_agent).content
+        (raw_dir / "countryInfo.txt").write_bytes(country_raw)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Cities ingest failed (countryInfo.txt): %s", exc)
+        return False
+
+    return True
+
+
+def derive_cities(ctx: FetchContext) -> bool:
+    raw_dir = ctx.data_root / "raw" / "cities"
+    zip_path = raw_dir / "cities15000.zip"
+    admin1_path = raw_dir / "admin1CodesASCII.txt"
+    country_path = raw_dir / "countryInfo.txt"
+    if not (zip_path.exists() and admin1_path.exists() and country_path.exists()):
+        log.warning("Cities derive missing raw inputs")
+        return False
+
+    admin1_raw = admin1_path.read_text(encoding="utf-8", errors="replace")
+    country_raw = country_path.read_text(encoding="utf-8", errors="replace")
     countries = _parse_country_info(country_raw)
     admin1_map = _parse_admin1(admin1_raw)
 
-    with zipfile.ZipFile(io.BytesIO(cities_zip)) as zf:
+    with zipfile.ZipFile(zip_path) as zf:
         with zf.open("cities15000.txt") as handle:
             lines = io.TextIOWrapper(handle, encoding="utf-8")
             output: List[str] = []
@@ -137,10 +180,19 @@ def update_cities(ctx: FetchContext) -> bool:
                     )
                 )
 
+    if not output:
+        return False
     target = ctx.data_root / "cities2.txt"
     _atomic_write(target, "\n".join(output) + "\n")
     log.info("Updated cities2.txt with %d cities", len(output))
     return True
+
+
+def update_cities(ctx: FetchContext) -> bool:
+    ok = ingest_cities(ctx)
+    if not ok:
+        log.warning("cities ingest failed; attempting derive from existing raw")
+    return derive_cities(ctx)
 
 
 def _parse_cty_simple(raw: str) -> List[Tuple[str, float, float, int]]:
@@ -246,28 +298,56 @@ def format_cty_output(rows: List[Tuple[str, float, float, int]], extracted_from:
     return output
 
 
-def update_cty(ctx: FetchContext) -> bool:
+def ingest_cty(ctx: FetchContext) -> bool:
+    raw_dir = ctx.data_root / "raw" / "cty"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    ok = False
+
     urls = [
         "https://www.country-files.com/cty/cty_wt_mod.dat",
         "https://www.country-files.com/big-cty/cty_wt_mod.dat",
     ]
-    result = fetch_first_ok(urls, ctx.timeout, ctx.user_agent)
-    raw = result.content.decode("utf-8", errors="replace")
+    try:
+        result = fetch_first_ok(urls, ctx.timeout, ctx.user_agent)
+        (raw_dir / "cty_wt_mod.dat").write_bytes(result.content)
+        ok = True
+    except Exception as exc:  # noqa: BLE001
+        log.warning("cty ingest failed (cty_wt_mod.dat): %s", exc)
 
-    rows = _parse_cty_simple(raw)
-    if not rows:
-        rows = _parse_cty_dat(raw)
-    if not rows:
-        log.warning("cty_wt_mod.dat parse yielded no rows, falling back to cty.dat")
-        cty_urls = [
-            "https://www.country-files.com/cty/cty.dat",
-            "https://www.country-files.com/big-cty/cty.dat",
-        ]
+    cty_urls = [
+        "https://www.country-files.com/cty/cty.dat",
+        "https://www.country-files.com/big-cty/cty.dat",
+    ]
+    try:
         result = fetch_first_ok(cty_urls, ctx.timeout, ctx.user_agent)
-        raw = result.content.decode("utf-8", errors="replace")
-        rows = _parse_cty_dat(raw)
+        (raw_dir / "cty.dat").write_bytes(result.content)
+        ok = True
+    except Exception as exc:  # noqa: BLE001
+        log.warning("cty ingest failed (cty.dat): %s", exc)
+
+    return ok
+
+
+def derive_cty(ctx: FetchContext) -> bool:
+    raw_dir = ctx.data_root / "raw" / "cty"
+    raw_path = raw_dir / "cty_wt_mod.dat"
+    raw = None
+    if raw_path.exists():
+        raw = raw_path.read_text(encoding="utf-8", errors="replace")
+    if raw:
+        rows = _parse_cty_simple(raw)
         if not rows:
-            log.warning("cty.dat parse yielded no rows")
+            rows = _parse_cty_dat(raw)
+    else:
+        rows = []
+
+    if not rows:
+        fallback_path = raw_dir / "cty.dat"
+        if fallback_path.exists():
+            raw = fallback_path.read_text(encoding="utf-8", errors="replace")
+            rows = _parse_cty_dat(raw)
+        if not rows:
+            log.warning("cty derive yielded no rows")
             return False
 
     now = datetime.now(timezone.utc).strftime("%a %b %d %H:%M:%S %YZ")
@@ -292,22 +372,35 @@ def _parse_tle(text: str) -> List[Tuple[str, str, str]]:
     return triples
 
 
-def update_esats(ctx: FetchContext) -> bool:
-    urls = [
-        "https://celestrak.org/NORAD/elements/gp.php?GROUP=amateur&FORMAT=tle",
-        "https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=tle",
-        "https://celestrak.org/NORAD/elements/gp.php?CATNR=25544&FORMAT=tle",
-    ]
+def ingest_esats(ctx: FetchContext) -> bool:
+    urls = {
+        "amateur.tle": "https://celestrak.org/NORAD/elements/gp.php?GROUP=amateur&FORMAT=tle",
+        "weather.tle": "https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=tle",
+        "iss.tle": "https://celestrak.org/NORAD/elements/gp.php?CATNR=25544&FORMAT=tle",
+    }
+    raw_dir = ctx.data_root / "raw" / "esats"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    ok = False
+    for name, url in urls.items():
+        try:
+            result = fetch_first_ok([url], ctx.timeout, ctx.user_agent)
+            (raw_dir / name).write_bytes(result.content)
+            ok = True
+        except Exception as exc:  # noqa: BLE001
+            log.warning("esats ingest failed (%s): %s", url, exc)
+    return ok
 
+
+def derive_esats(ctx: FetchContext) -> bool:
+    raw_dir = ctx.data_root / "raw" / "esats"
     all_triples: Dict[str, Tuple[str, str]] = {}
-    for url in urls:
-        result = fetch_first_ok([url], ctx.timeout, ctx.user_agent)
-        text = result.content.decode("utf-8", errors="replace")
+    for path in raw_dir.glob("*.tle"):
+        text = path.read_text(encoding="utf-8", errors="replace")
         for name, line1, line2 in _parse_tle(text):
             all_triples[name] = (line1, line2)
 
     if not all_triples:
-        log.warning("No TLEs parsed from CelesTrak")
+        log.warning("No TLEs parsed from raw esats data")
         return False
 
     output: List[str] = []
@@ -321,12 +414,33 @@ def update_esats(ctx: FetchContext) -> bool:
     return True
 
 
-def update_version(ctx: FetchContext) -> bool:
+def ingest_version(ctx: FetchContext) -> bool:
     version = ctx.hamclock_version or os.environ.get("HAMCLOCK_VERSION")
     if not version:
-        log.info("HAMCLOCK_VERSION not set; skipping version update")
+        log.info("HAMCLOCK_VERSION not set; skipping version ingest")
         return False
     info = ctx.hamclock_version_info or os.environ.get("HAMCLOCK_VERSION_INFO")
+    raw_dir = ctx.data_root / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    payload = {"version": version, "info": info}
+    (raw_dir / "version.json").write_text(__import__("json").dumps(payload), encoding="utf-8")
+    return True
+
+
+def derive_version(ctx: FetchContext) -> bool:
+    raw_path = ctx.data_root / "raw" / "version.json"
+    if not raw_path.exists():
+        log.warning("version derive missing raw data")
+        return False
+    try:
+        payload = __import__("json").loads(raw_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("version derive decode failed: %s", exc)
+        return False
+    version = payload.get("version")
+    if not version:
+        return False
+    info = payload.get("info")
     lines = [version]
     if info:
         lines.append(info)
@@ -334,6 +448,27 @@ def update_version(ctx: FetchContext) -> bool:
     _atomic_write(target, "\n".join(lines) + "\n")
     log.info("Updated version.txt to %s", version)
     return True
+
+
+def update_esats(ctx: FetchContext) -> bool:
+    ok = ingest_esats(ctx)
+    if not ok:
+        log.warning("esats ingest failed; attempting derive from existing raw")
+    return derive_esats(ctx)
+
+
+def update_cty(ctx: FetchContext) -> bool:
+    ok = ingest_cty(ctx)
+    if not ok:
+        log.warning("cty ingest failed; attempting derive from existing raw")
+    return derive_cty(ctx)
+
+
+def update_version(ctx: FetchContext) -> bool:
+    ok = ingest_version(ctx)
+    if not ok:
+        log.warning("version ingest failed; attempting derive from existing raw")
+    return derive_version(ctx)
 
 
 PHASE1_JOBS = [

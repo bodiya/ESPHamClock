@@ -53,11 +53,25 @@ def _coerce_freq_hz(value: Optional[object]) -> Optional[int]:
     return int(freq)
 
 
-def update_onta(ctx: FetchContext) -> bool:
+def ingest_onta(ctx: FetchContext) -> bool:
     url = "https://api.pota.app/spot/activator"
-    data = fetch_first_ok([url], ctx.timeout, ctx.user_agent).content
+    raw_dir = ctx.data_root / "raw" / "onta"
+    raw_dir.mkdir(parents=True, exist_ok=True)
     try:
-        spots = __import__("json").loads(data)
+        data = fetch_first_ok([url], ctx.timeout, ctx.user_agent).content
+    except Exception as exc:  # noqa: BLE001
+        log.warning("POTA ingest failed: %s", exc)
+        return False
+    (raw_dir / "activator.json").write_bytes(data)
+    return True
+
+
+def derive_onta(ctx: FetchContext) -> bool:
+    raw_path = ctx.data_root / "raw" / "onta" / "activator.json"
+    if not raw_path.exists():
+        return False
+    try:
+        spots = __import__("json").loads(raw_path.read_text(encoding="utf-8"))
     except Exception as exc:  # noqa: BLE001
         log.warning("POTA JSON decode failed: %s", exc)
         return False
@@ -123,18 +137,44 @@ def _parse_rss_titles(xml_text: str) -> List[Dict[str, str]]:
     return items
 
 
-def update_rss(ctx: FetchContext) -> bool:
+def ingest_rss(ctx: FetchContext) -> bool:
     feeds = ctx.rss_feeds or []
+    raw_dir = ctx.data_root / "raw" / "rss"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    if not feeds:
+        return False
+    ok = False
+    for idx, url in enumerate(feeds):
+        try:
+            raw = fetch_first_ok([url], ctx.timeout, ctx.user_agent).content
+        except Exception as exc:  # noqa: BLE001
+            log.warning("RSS ingest failed for %s: %s", url, exc)
+            continue
+        (raw_dir / f"feed-{idx}.xml").write_bytes(raw)
+        ok = True
+    (raw_dir / "feeds.json").write_text(__import__("json").dumps(feeds), encoding="utf-8")
+    return ok
+
+
+def derive_rss(ctx: FetchContext) -> bool:
+    raw_dir = ctx.data_root / "raw" / "rss"
+    feeds_path = raw_dir / "feeds.json"
+    if not feeds_path.exists():
+        return False
+    try:
+        feeds = __import__("json").loads(feeds_path.read_text(encoding="utf-8"))
+    except Exception:
+        feeds = ctx.rss_feeds or []
+
     headlines: List[str] = []
     seen = set()
 
-    for url in feeds:
-        try:
-            raw = fetch_first_ok([url], ctx.timeout, ctx.user_agent).content
-            items = _parse_rss_titles(raw.decode("utf-8", errors="replace"))
-        except Exception as exc:  # noqa: BLE001
-            log.warning("RSS fetch failed for %s: %s", url, exc)
+    for idx, url in enumerate(feeds):
+        feed_path = raw_dir / f"feed-{idx}.xml"
+        if not feed_path.exists():
             continue
+        raw = feed_path.read_text(encoding="utf-8", errors="replace")
+        items = _parse_rss_titles(raw)
 
         for item in items:
             source = item.get("source") or url
@@ -157,6 +197,20 @@ def update_rss(ctx: FetchContext) -> bool:
     target = ctx.data_root / "RSS" / "web15rss.txt"
     _atomic_write(target, "\n".join(headlines) + "\n")
     return True
+
+
+def update_onta(ctx: FetchContext) -> bool:
+    ok = ingest_onta(ctx)
+    if not ok:
+        log.warning("onta ingest failed; attempting derive from existing raw")
+    return derive_onta(ctx)
+
+
+def update_rss(ctx: FetchContext) -> bool:
+    ok = ingest_rss(ctx)
+    if not ok:
+        log.warning("rss ingest failed; attempting derive from existing raw")
+    return derive_rss(ctx)
 
 
 PHASE3_JOBS = [

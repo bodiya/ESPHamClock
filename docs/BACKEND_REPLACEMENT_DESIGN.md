@@ -30,6 +30,32 @@ All requests use HTTP/1.1 GET with a User-Agent header. The client skips HTTP he
 
 HamClock caches most data locally with age-based invalidation. The backend should include appropriate `Cache-Control` headers but the client doesn't require them.
 
+### Data Lifecycle (Ingest vs Derive)
+
+To serve time-series data correctly at any client start time, the backend separates **ingest** (upstream fetch) from **derive** (HamClock-formatted outputs):
+
+- **Raw store**: Append-only or snapshot files under a local `data_root/raw/` hierarchy.
+- **Derived store**: Exact HamClock file formats under `data_root/` (the files served to clients).
+- **Ingest jobs** run at upstream cadence (minutes → hours).
+- **Derive jobs** run at client cadence (often 1–10 minutes) so outputs are always aligned to “now”.
+
+A **datasource registry** declares for each source:
+
+- ingest function, derive function
+- ingest schedule, derive schedule
+- raw paths, derived paths
+- expected line counts, expected cadence
+
+### Health Checks
+
+A periodic health check logs warnings when:
+
+- derived files are missing or stale
+- line counts are below expected
+- time-series cadence is off (where timestamps are present)
+
+This is designed to catch gaps before the client reports “data invalid”.
+
 ### Error Handling
 
 On network errors or malformed responses, HamClock logs to serial console and retries later. Return HTTP 200 with valid data, or let the connection fail - don't return error pages.
@@ -738,14 +764,21 @@ Single line with version number (e.g., `4.22` or `4.22b5` for beta).
 
 1. **Web Server:** nginx or Caddy for static files + reverse proxy
 2. **API Server:** Python (Flask/FastAPI) or Node.js
-3. **Scheduler:** cron or systemd timers for data updates
-4. **Cache:** Redis or filesystem cache
-5. **Storage:** S3-compatible for map files
+3. **Scheduler:** Python scheduler (APScheduler) for ingest/derive jobs
+4. **Cache:** local filesystem cache (raw + derived)
+5. **Storage:** local disk (no external object storage required)
 
 ### Directory Structure
 
 ```
 /
+├── raw/
+│   ├── aurora/
+│   │   ├── source.txt
+│   │   ├── hemi-power.txt
+│   │   └── ovation.json
+│   └── xray/
+│       └── xrays-7-day.json
 ├── Bz/
 │   └── Bz.txt
 ├── solar-wind/
@@ -800,15 +833,27 @@ Single line with version number (e.g., `4.22` or `4.22b5` for beta).
 
 ### Update Schedule
 
+Use separate schedules for **ingest** (upstream fetch) and **derive** (HamClock output):
+
 | Frequency | Endpoints |
 |-----------|-----------|
-| 5 minutes | xray, solar-wind, Bz |
+| 1 minute | xray derive |
+| 5 minutes | xray ingest, solar-wind, Bz |
 | 15 minutes | drap |
-| 30 minutes | aurora |
+| 30 minutes | aurora ingest/derive |
 | 1 hour | ssn, solarflux, kindex, noaaswx, contests, RSS |
 | 3 hours | esats, dst |
 | Daily | dxpeds, cities, cty |
 | Static | maps, rank2_coeffs |
+
+### Backend Implementation Notes
+
+- **Base path:** Serve under `/ham/HamClock` by default; allow configuration via `--base-path`.
+- **Startup refresh:** `--refresh-on-start` runs ingest then derive for all sources.
+- **Single-source update:** `--update-x-on-start name[:ingest|:derive]`.
+- **Fallback proxy:** Optional `--clearskyinstitute-fallback` with `--fallback-redirect` to issue 302 Location for unimplemented endpoints. Fallback responses are logged in full when enabled.
+- **Reverse geocode cache:** Local cache with long TTL; Nominatim or configurable provider.
+- **Propagation engine:** Optional ITURHFProp CLI integration; set path and data directory via config/environment.
 
 ### Priority Implementation Order
 

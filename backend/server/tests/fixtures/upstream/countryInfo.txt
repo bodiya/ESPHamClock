@@ -1,0 +1,2 @@
+US	USA	840	US	United States
+FR	FRA	250	FR	France

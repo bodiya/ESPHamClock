@@ -13,11 +13,12 @@ from .config import default_config
 from .scheduler import start_scheduler
 from .services.geoloc import lookup_ip
 from .services.spots import fetch_pskreporter, fetch_wspr, fetch_rbn
+from .services.propagation import compute_band_conditions
 from .storage import SafePathError, read_binary_and_mtime, read_text_and_mtime
 from .tasks import build_context
-from .fetchers.phase1 import run_phase1, update_cty
-from .fetchers.phase2 import run_phase2
-from .fetchers.phase3 import run_phase3
+from .fetchers.phase1 import update_cty, update_cities, update_esats, update_version
+from .fetchers.phase4 import update_wx
+from .datasources import get_registry, assess_derived_text, run_derive
 from .fallback import fetch_with_cache, setup_fallback_logging
 
 
@@ -73,6 +74,12 @@ def _missing_response() -> Response:
     return Response("", status=200, mimetype=TEXT_CONTENT_TYPE)
 
 
+def _fallback_redirect_response() -> Response:
+    base = app.config.get("FALLBACK_BASE_URL", "http://clearskyinstitute.com")
+    url = f"{base}{request.full_path}"
+    return Response("", status=302, headers={"Location": url})
+
+
 def _make_text_response(text: str, mtime: Optional[float]) -> Response:
     resp = Response(text, status=200, mimetype=TEXT_CONTENT_TYPE)
     if mtime is not None:
@@ -94,6 +101,23 @@ def _serve_text_file(rel_path: str) -> Response:
         return Response("", status=404)
     if text is None:
         log.warning("Missing text file: %s", rel_path)
+        if app.config.get("FALLBACK_REDIRECT"):
+            return _fallback_redirect_response()
+        if app.config.get("FALLBACK_ENABLED"):
+            resp = fetch_with_cache(
+                fallback_dir=app.config["FALLBACK_DIR"],
+                base_url=app.config["FALLBACK_BASE_URL"],
+                timeout=app.config.get("FETCHER_TIMEOUT", 15.0),
+                max_age_seconds=0.0,
+            )
+            if resp is not None:
+                return resp
+        return _missing_response()
+    ok, reason = assess_derived_text(build_context(app), rel_path, text, mtime)
+    if not ok:
+        log.warning("Derived text invalid for %s: %s", rel_path, reason)
+        if app.config.get("FALLBACK_REDIRECT"):
+            return _fallback_redirect_response()
         if app.config.get("FALLBACK_ENABLED"):
             resp = fetch_with_cache(
                 fallback_dir=app.config["FALLBACK_DIR"],
@@ -112,8 +136,10 @@ def _serve_binary_file(rel_path: str) -> Response:
         data, mtime = read_binary_and_mtime(app.config["DATA_ROOT"], rel_path)
     except SafePathError:
         return Response("", status=404)
-    if data is None:
+    if data is None or len(data) == 0:
         log.warning("Missing binary file: %s", rel_path)
+        if app.config.get("FALLBACK_REDIRECT"):
+            return _fallback_redirect_response()
         if app.config.get("FALLBACK_ENABLED"):
             resp = fetch_with_cache(
                 fallback_dir=app.config["FALLBACK_DIR"],
@@ -127,6 +153,22 @@ def _serve_binary_file(rel_path: str) -> Response:
     return _make_binary_response(data, mtime)
 
 
+def _latest_ssn(data_root: Path) -> int:
+    path = data_root / "ssn" / "ssn-31.txt"
+    if not path.exists():
+        return 0
+    try:
+        lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if not lines:
+            return 0
+        last = lines[-1].split()
+        if last:
+            return int(float(last[-1]))
+    except Exception:
+        return 0
+    return 0
+
+
 @app.before_request
 def _log_request() -> None:
     if log.isEnabledFor(logging.DEBUG):
@@ -138,6 +180,8 @@ def _log_request() -> None:
 
 @app.errorhandler(404)
 def handle_not_found(error) -> Response:
+    if app.config.get("FALLBACK_REDIRECT"):
+        return _fallback_redirect_response()
     if app.config.get("FALLBACK_ENABLED"):
         resp = fetch_with_cache(
             fallback_dir=app.config["FALLBACK_DIR"],
@@ -167,8 +211,49 @@ for route, rel_path in BASE_BINARY_ROUTES.items():
 
 @app.get("/fetchBandConditions.pl")
 def fetch_band_conditions() -> Response:
-    path = request.args.get("PATH", "1")
-    rel_path = "fetchBandConditions_long.txt" if path == "2" else "fetchBandConditions.txt"
+    ctx = build_context(app)
+    if ctx.prop_enabled and ctx.prop_cli_path and ctx.prop_data_dir:
+        try:
+            year = int(request.args.get("YEAR", "2024"))
+            month = int(request.args.get("MONTH", "1"))
+            rxlat = float(request.args.get("RXLAT", "0"))
+            rxlng = float(request.args.get("RXLNG", "0"))
+            txlat = float(request.args.get("TXLAT", "0"))
+            txlng = float(request.args.get("TXLNG", "0"))
+            utc = int(float(request.args.get("UTC", "0")))
+            path_flag = request.args.get("PATH", "0")
+            power = int(float(request.args.get("POW", "100")))
+            mode = int(float(request.args.get("MODE", "38")))
+        except ValueError:
+            year = month = utc = power = mode = 0
+            rxlat = rxlng = txlat = txlng = 0.0
+            path_flag = "0"
+
+        short_path = str(path_flag).strip() in ("0", "1", "SP", "sp", "short")
+        ssn = _latest_ssn(ctx.data_root)
+        content = compute_band_conditions(
+            query=request.query_string.decode("utf-8", errors="replace"),
+            cache_dir=ctx.prop_cache_dir or ctx.data_root / "prop-cache",
+            cli_path=ctx.prop_cli_path,
+            data_dir=ctx.prop_data_dir,
+            txlat=txlat,
+            txlng=txlng,
+            rxlat=rxlat,
+            rxlng=rxlng,
+            year=year,
+            month=month,
+            utc_hour=utc,
+            ssn=ssn,
+            power_w=power,
+            mode=mode,
+            short_path=short_path,
+        )
+        if content:
+            return _make_text_response(content, None)
+
+    path_flag = request.args.get("PATH", "0")
+    is_long = str(path_flag).strip() in ("2", "LP", "lp", "long")
+    rel_path = "fetchBandConditions_long.txt" if is_long else "fetchBandConditions.txt"
     return _serve_text_file(rel_path)
 
 
@@ -191,6 +276,17 @@ def fetch_ip_geoloc() -> Response:
     text, mtime = read_text_and_mtime(app.config["DATA_ROOT"], "fetchIPGeoloc.txt", encoding="utf-8")
     if text is None:
         log.warning("Missing text file: fetchIPGeoloc.txt")
+        if app.config.get("FALLBACK_REDIRECT"):
+            return _fallback_redirect_response()
+        if app.config.get("FALLBACK_ENABLED"):
+            resp = fetch_with_cache(
+                fallback_dir=app.config["FALLBACK_DIR"],
+                base_url=app.config["FALLBACK_BASE_URL"],
+                timeout=app.config.get("FETCHER_TIMEOUT", 15.0),
+                max_age_seconds=0.0,
+            )
+            if resp is not None:
+                return resp
         return _missing_response()
 
     lines = []
@@ -205,6 +301,20 @@ def fetch_ip_geoloc() -> Response:
 @app.get("/wx.pl")
 def fetch_weather() -> Response:
     is_de = request.args.get("is_de", "1")
+    lat = request.args.get("lat")
+    lng = request.args.get("lng")
+    if lat and lng:
+        try:
+            lat_f = float(lat)
+            lng_f = float(lng)
+        except ValueError:
+            lat_f = None
+            lng_f = None
+        if lat_f is not None and lng_f is not None:
+            ctx = build_context(app)
+            content = update_wx(ctx, is_de == "1", lat_f, lng_f)
+            if content:
+                return _make_text_response(content, None)
     rel_path = "wx_de.txt" if is_de == "1" else "wx_dx.txt"
     return _serve_text_file(rel_path)
 
@@ -342,9 +452,47 @@ def init_scheduler() -> None:
 
 def refresh_on_start() -> None:
     ctx = build_context(app)
-    run_phase1(ctx)
-    run_phase2(ctx)
-    run_phase3(ctx)
+    registry = get_registry()
+    for source in registry.values():
+        if source.ingest:
+            try:
+                ok = source.ingest(ctx)
+                log.info("Startup ingest %s completed: %s", source.name, ok)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Startup ingest %s failed: %s", source.name, exc)
+    for source in registry.values():
+        if source.derive:
+            try:
+                ok = run_derive(ctx, source)
+                log.info("Startup derive %s completed: %s", source.name, ok)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Startup derive %s failed: %s", source.name, exc)
+
+
+def _update_once(name: str) -> bool:
+    ctx = build_context(app)
+    registry = get_registry()
+    phase = None
+    if ":" in name:
+        name, phase = name.split(":", 1)
+    source = registry.get(name)
+    if not source:
+        log.warning("Unknown update source: %s", name)
+        return False
+    ok = True
+    if phase in (None, "ingest"):
+        if source.ingest:
+            ok = bool(source.ingest(ctx)) and ok
+        elif phase == "ingest":
+            log.warning("Source %s has no ingest phase", name)
+            return False
+    if phase in (None, "derive"):
+        if source.derive:
+            ok = bool(run_derive(ctx, source)) and ok
+        elif phase == "derive":
+            log.warning("Source %s has no derive phase", name)
+            return False
+    return ok
 
 
 def _parse_args() -> argparse.Namespace:
@@ -356,12 +504,17 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--base-path", help="Optional base URL path, e.g. /ham/HamClock")
     parser.add_argument("--refresh-on-start", action="store_true", help="Run Phase 1 fetchers before serving")
     parser.add_argument("--refresh-cty-only", action="store_true", help="Run only CTY refresh before serving")
+    parser.add_argument(
+        "--update-x-on-start",
+        help="Update a single datasource (e.g. ssn, xray, aurora) or name:ingest/name:derive",
+    )
     parser.add_argument("--hamclock-version", help="Version string for version.txt")
     parser.add_argument("--hamclock-version-info", help="Optional second line for version.txt")
     parser.add_argument("--clearskyinstitute-fallback", action="store_true", help="Proxy missing endpoints to clearskyinstitute.com and cache results")
     parser.add_argument("--fallback-dir", help="Fallback cache directory (default: ./fallback)")
     parser.add_argument("--fallback-base-url", help="Fallback base URL (default: http://clearskyinstitute.com)")
     parser.add_argument("--fallback-log-file", help="Log fallback requests/responses to this file")
+    parser.add_argument("--fallback-redirect", action="store_true", help="Return 302 Location to fallback base URL")
     parser.add_argument("--fetcher-timeout", type=float, help="Fetcher timeout in seconds")
     parser.add_argument("--fetcher-ua", help="User-Agent string for fetchers")
     parser.add_argument("--geoloc-provider", help="Geoloc provider (file, auto, ip-api, ipapi, ipwhois)")
@@ -394,6 +547,8 @@ if __name__ == "__main__":
         app.config["FALLBACK_BASE_URL"] = args.fallback_base_url
     if args.fallback_log_file:
         app.config["FALLBACK_LOG_FILE"] = args.fallback_log_file
+    if args.fallback_redirect:
+        app.config["FALLBACK_REDIRECT"] = True
     if args.hamclock_version:
         app.config["HAMCLOCK_VERSION"] = args.hamclock_version
     if args.hamclock_version_info:
@@ -412,7 +567,9 @@ if __name__ == "__main__":
     logging.basicConfig(level=app.config["LOG_LEVEL"])
     setup_fallback_logging(app.config.get("FALLBACK_LOG_FILE"))
     register_base_path_aliases()
-    if args.refresh_cty_only:
+    if args.update_x_on_start:
+        _update_once(args.update_x_on_start)
+    elif args.refresh_cty_only:
         ctx = build_context(app)
         update_cty(ctx)
     elif args.refresh_on_start:

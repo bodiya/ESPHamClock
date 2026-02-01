@@ -1,0 +1,2 @@
+123	Boston	Boston		42.3601	-71.0589	P	PPL	US		MA				675647	10	America/New_York	2026-02-01
+456	Paris	Paris		48.8566	2.3522	P	PPL	FR		11				2161000	35	Europe/Paris	2026-02-01

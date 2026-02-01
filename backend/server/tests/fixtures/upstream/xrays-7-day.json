@@ -1,0 +1,8 @@
+[
+  {"time_tag":"2026-02-02T00:00:00Z","satellite":16,"flux":1.173579e-08,"observed_flux":1.173579e-08,"energy":"0.05-0.4nm"},
+  {"time_tag":"2026-02-02T00:00:00Z","satellite":16,"flux":2.364622e-07,"observed_flux":2.364622e-07,"energy":"0.1-0.8nm"},
+  {"time_tag":"2026-02-02T00:10:00Z","satellite":16,"flux":1.199570e-08,"observed_flux":1.199570e-08,"energy":"0.05-0.4nm"},
+  {"time_tag":"2026-02-02T00:10:00Z","satellite":16,"flux":2.386838e-07,"observed_flux":2.386838e-07,"energy":"0.1-0.8nm"},
+  {"time_tag":"2026-02-02T00:20:00Z","satellite":16,"flux":1.210000e-08,"observed_flux":1.210000e-08,"energy":"0.05-0.4nm"},
+  {"time_tag":"2026-02-02T00:20:00Z","satellite":16,"flux":2.400000e-07,"observed_flux":2.400000e-07,"energy":"0.1-0.8nm"}
+]

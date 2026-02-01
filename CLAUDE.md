@@ -76,3 +76,16 @@ Platform-specific code uses these compile-time flags (set by Makefile):
 - `_IS_LINUX`, `_IS_LINUX_RPI`, `_IS_LINUX_ARMBIAN`
 - `_IS_FREEBSD`, `_IS_NETBSD`
 - `_IS_APPLE`
+
+## Backend Output Comparisons (Gold Files)
+
+When HamClock reports endpoint errors, compare the generated backend output against
+the gold reference files in `backend/gold/`:
+
+- **Format:** Ensure line layout, field order, delimiters, and fixed-width spacing match the gold file.
+- **Line count:** Compare the number of rows served vs. the gold file; use this to decide upstream refresh
+  frequency (e.g., if gold has 150 rows, ensure your output keeps the same count).
+- **Time spacing:** For time-series data, verify the time delta between consecutive rows (e.g., 1‑minute vs
+  10‑minute cadence).
+- **Value magnitude:** Confirm units and magnitudes match the gold file (e.g., MHz vs Hz). A 10 in gold
+  should not become 10,000,000 in output.
