@@ -52,6 +52,10 @@ def default_config() -> dict:
             "HAMCLOCK_GEOCODE_BASE_URL", "https://nominatim.openstreetmap.org/reverse"
         ),
         "GEOCODE_EMAIL": os.environ.get("HAMCLOCK_GEOCODE_EMAIL"),
+        "OPEN_METEO_BASE_URL": os.environ.get(
+            "HAMCLOCK_OPEN_METEO_BASE_URL", "https://api.open-meteo.com/v1/forecast"
+        ),
+        "OPEN_METEO_API_KEY": os.environ.get("HAMCLOCK_OPEN_METEO_API_KEY"),
         "PROP_ENABLED": os.environ.get("HAMCLOCK_PROP_ENABLED", "0") == "1",
         "PROP_ENGINE": os.environ.get("HAMCLOCK_PROP_ENGINE", "iturhfprop"),
         "PROP_CLI_PATH": os.environ.get("HAMCLOCK_PROP_CLI_PATH"),

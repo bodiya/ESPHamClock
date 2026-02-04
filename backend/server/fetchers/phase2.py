@@ -121,6 +121,63 @@ def _parse_daily_solar_indices(raw: str) -> List[Tuple[datetime, float, float]]:
     return rows
 
 
+def ingest_solar_cycle_indices(ctx: FetchContext) -> bool:
+    url = "https://services.swpc.noaa.gov/json/solar-cycle/observed-solar-cycle-indices.json"
+    raw_dir = ctx.data_root / "raw" / "solar"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        raw = fetch_first_ok([url], ctx.timeout, ctx.user_agent).content
+    except Exception as exc:  # noqa: BLE001
+        log.warning("solar cycle indices ingest failed: %s", exc)
+        return False
+    _write_cache(raw_dir / "observed-solar-cycle-indices.json", raw)
+    return True
+
+
+def _parse_solar_cycle_indices(raw: str) -> List[Tuple[datetime, float, float]]:
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return []
+    rows: List[Tuple[datetime, float, float]] = []
+    if not isinstance(data, list):
+        return rows
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        time_tag = entry.get("time-tag") or entry.get("time_tag") or entry.get("time") or entry.get("date")
+        if not time_tag:
+            continue
+        dt = None
+        for fmt in ("%Y-%m-%d", "%Y-%m"):
+            try:
+                dt = datetime.strptime(str(time_tag), fmt).replace(tzinfo=timezone.utc)
+                break
+            except ValueError:
+                continue
+        if dt is None:
+            dt = _parse_time(str(time_tag))
+        if dt is None:
+            continue
+        ssn = entry.get("ssn") or entry.get("sunspot_number") or entry.get("sunspot")
+        flux = (
+            entry.get("f10.7")
+            or entry.get("f107")
+            or entry.get("f10_7")
+            or entry.get("radio_flux")
+            or entry.get("flux")
+        )
+        if ssn is None or flux is None:
+            continue
+        try:
+            ssn_val = float(ssn)
+            flux_val = float(flux)
+        except Exception:
+            continue
+        rows.append((dt, flux_val, ssn_val))
+    return rows
+
+
 def _load_daily_solar_indices(ctx: FetchContext) -> List[Tuple[datetime, float, float]]:
     raw_path = ctx.data_root / "raw" / "solar" / "daily-solar-indices.txt"
     raw = _read_text(raw_path, max_age_seconds=0)
@@ -129,10 +186,19 @@ def _load_daily_solar_indices(ctx: FetchContext) -> List[Tuple[datetime, float, 
     return _parse_daily_solar_indices(raw)
 
 
+def _load_solar_cycle_indices(ctx: FetchContext) -> List[Tuple[datetime, float, float]]:
+    raw_path = ctx.data_root / "raw" / "solar" / "observed-solar-cycle-indices.json"
+    raw = _read_text(raw_path, max_age_seconds=0)
+    if raw is None:
+        return []
+    return _parse_solar_cycle_indices(raw)
+
+
 def ingest_solar_indices(ctx: FetchContext) -> bool:
     ok = ingest_daily_solar_indices(ctx)
+    ok_cycle = ingest_solar_cycle_indices(ctx)
     ok_outlook = ingest_27_day_outlook(ctx)
-    return ok or ok_outlook
+    return ok or ok_cycle or ok_outlook
 
 
 def derive_ssn(ctx: FetchContext) -> bool:
@@ -147,18 +213,27 @@ def derive_ssn(ctx: FetchContext) -> bool:
 
 
 def derive_ssn_history(ctx: FetchContext) -> bool:
-    rows = _load_daily_solar_indices(ctx)
+    rows = _load_solar_cycle_indices(ctx)
+    if not rows:
+        rows = _load_daily_solar_indices(ctx)
     if not rows:
         return False
-    buckets: Dict[int, List[float]] = {}
+    buckets: Dict[Tuple[int, int], List[float]] = {}
     for dt, _, ssn in rows:
-        buckets.setdefault(dt.year, []).append(ssn)
+        block = (dt.month - 1) // 2
+        buckets.setdefault((dt.year, block), []).append(ssn)
     output: List[str] = []
-    for year in sorted(buckets):
-        values = buckets[year]
+    for year, block in sorted(buckets):
+        values = buckets[(year, block)]
         if values:
             avg = sum(values) / len(values)
-            output.append(f"{year} {avg:.1f}")
+            frac = (block * 2) / 12
+            year_value = year + frac
+            if frac == 0:
+                year_label = f"{year}"
+            else:
+                year_label = f"{year_value:.2f}".rstrip("0").rstrip(".")
+            output.append(f"{year_label} {avg:.1f}")
     if not output:
         return False
     target = ctx.data_root / "ssn" / "ssn-history.txt"
@@ -223,18 +298,21 @@ def derive_solar_flux(ctx: FetchContext) -> bool:
 
 
 def derive_solar_flux_history(ctx: FetchContext) -> bool:
-    rows = _load_daily_solar_indices(ctx)
+    rows = _load_solar_cycle_indices(ctx)
+    if not rows:
+        rows = _load_daily_solar_indices(ctx)
     if not rows:
         return False
-    buckets: Dict[int, List[float]] = {}
+    buckets: Dict[Tuple[int, int], List[float]] = {}
     for dt, flux, _ in rows:
-        buckets.setdefault(dt.year, []).append(flux)
+        buckets.setdefault((dt.year, dt.month), []).append(flux)
     output: List[str] = []
-    for year in sorted(buckets):
-        values = buckets[year]
+    for year, month in sorted(buckets):
+        values = buckets[(year, month)]
         if values:
             avg = sum(values) / len(values)
-            output.append(f"{year} {avg:.2f}")
+            year_value = year + (month - 1) / 12
+            output.append(f"{year_value:.2f} {avg:.3f}")
     if not output:
         return False
     target = ctx.data_root / "solar-flux" / "solarflux-history.txt"
@@ -250,7 +328,7 @@ def update_ssn(ctx: FetchContext) -> bool:
 
 
 def update_ssn_history(ctx: FetchContext) -> bool:
-    ok = ingest_daily_solar_indices(ctx)
+    ok = ingest_solar_indices(ctx)
     if not ok:
         log.warning("ssn_history ingest failed; attempting derive from existing raw")
     return derive_ssn_history(ctx)
@@ -264,7 +342,7 @@ def update_solar_flux(ctx: FetchContext) -> bool:
 
 
 def update_solar_flux_history(ctx: FetchContext) -> bool:
-    ok = ingest_daily_solar_indices(ctx)
+    ok = ingest_solar_indices(ctx)
     if not ok:
         log.warning("solar_flux_history ingest failed; attempting derive from existing raw")
     return derive_solar_flux_history(ctx)
@@ -272,51 +350,80 @@ def update_solar_flux_history(ctx: FetchContext) -> bool:
 
 def ingest_kindex(ctx: FetchContext) -> bool:
     url = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
+    forecast_url = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json"
     raw_dir = ctx.data_root / "raw" / "geomag"
     raw_dir.mkdir(parents=True, exist_ok=True)
+    ok = False
     try:
         result = fetch_first_ok([url], ctx.timeout, ctx.user_agent)
+        _write_cache(raw_dir / "noaa-planetary-k-index.json", result.content)
+        ok = True
     except Exception as exc:  # noqa: BLE001
         log.warning("kindex ingest failed: %s", exc)
-        return False
-    _write_cache(raw_dir / "noaa-planetary-k-index.json", result.content)
-    return True
+    try:
+        result = fetch_first_ok([forecast_url], ctx.timeout, ctx.user_agent)
+        _write_cache(raw_dir / "noaa-planetary-k-index-forecast.json", result.content)
+        ok = True
+    except Exception as exc:  # noqa: BLE001
+        log.warning("kindex forecast ingest failed: %s", exc)
+    return ok
+
+
+def _parse_kindex_rows(raw: str) -> List[Tuple[Optional[datetime], float]]:
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(data, list) or len(data) < 2:
+        return []
+    header = data[0]
+    rows = data[1:]
+    kp_index = None
+    time_idx = None
+    if isinstance(header, list):
+        for i, name in enumerate(header):
+            lname = str(name).lower()
+            if lname in ("kp_index", "kp", "kp_index_3h"):
+                kp_index = i
+            elif lname in ("time_tag", "time", "time_tag_utc"):
+                time_idx = i
+    if kp_index is None:
+        return []
+    values: List[Tuple[Optional[datetime], float]] = []
+    for row in rows:
+        if not isinstance(row, list) or len(row) <= kp_index:
+            continue
+        dt = None
+        if time_idx is not None and len(row) > time_idx:
+            dt = _parse_time(str(row[time_idx]))
+        try:
+            values.append((dt, float(row[kp_index])))
+        except Exception:
+            continue
+    return values
 
 
 def derive_kindex(ctx: FetchContext) -> bool:
     raw_path = ctx.data_root / "raw" / "geomag" / "noaa-planetary-k-index.json"
     raw = _read_cache(raw_path, max_age_seconds=0)
-    if raw is None:
-        return False
-    try:
-        data = json.loads(raw)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("kindex decode failed: %s", exc)
-        return False
-    if not isinstance(data, list) or len(data) < 2:
+    rows: List[Tuple[Optional[datetime], float]] = []
+    if raw is not None:
+        rows.extend(_parse_kindex_rows(raw))
+    forecast_path = ctx.data_root / "raw" / "geomag" / "noaa-planetary-k-index-forecast.json"
+    forecast_raw = _read_cache(forecast_path, max_age_seconds=0)
+    if forecast_raw is not None:
+        rows.extend(_parse_kindex_rows(forecast_raw))
+
+    if not rows:
         return False
 
-    header = data[0]
-    rows = data[1:]
-    kp_index = 0
-    if isinstance(header, list):
-        for i, name in enumerate(header):
-            if str(name).lower() in ("kp_index", "kp", "kp_index_3h"):
-                kp_index = i
-                break
-            if str(name).lower() == "kp":
-                kp_index = i
-                break
+    if any(dt is not None for dt, _ in rows):
+        rows = [(dt or datetime.min.replace(tzinfo=timezone.utc), val) for dt, val in rows]
+        rows.sort(key=lambda item: item[0])
 
-    values: List[str] = []
-    for row in rows:
-        if not isinstance(row, list) or len(row) <= kp_index:
-            continue
-        try:
-            values.append(f"{float(row[kp_index]):.2f}")
-        except Exception:
-            continue
-
+    values = [f"{val:.2f}" for _, val in rows]
+    if len(values) < 72 and values:
+        values.extend([values[-1]] * (72 - len(values)))
     values = _tail(values, 72)
     if not values:
         return False
@@ -476,7 +583,18 @@ def derive_solar_wind(ctx: FetchContext) -> bool:
             elif lname == "speed":
                 speed_idx = i
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    max_dt: Optional[datetime] = None
+    for row in rows:
+        if not isinstance(row, list) or len(row) <= time_idx:
+            continue
+        dt = _parse_time(str(row[time_idx]))
+        if dt is None:
+            continue
+        if max_dt is None or dt > max_dt:
+            max_dt = dt
+    if max_dt is None:
+        return False
+    cutoff = max_dt - timedelta(hours=24)
     lines: List[str] = []
     for row in rows:
         if not isinstance(row, list) or len(row) <= max(time_idx, dens_idx, speed_idx):
@@ -553,13 +671,12 @@ def derive_bz(ctx: FetchContext) -> bool:
             elif lname == "bt":
                 bt_idx = i
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-    lines: List[str] = ["# UNIX        Bx     By     Bz     Bt"]
+    buckets: Dict[int, Tuple[int, float, float, float, float]] = {}
     for row in rows:
         if not isinstance(row, list) or len(row) <= max(time_idx, bx_idx, by_idx, bz_idx, bt_idx):
             continue
         dt = _parse_time(str(row[time_idx]))
-        if dt is None or dt < cutoff:
+        if dt is None:
             continue
         try:
             bx = float(row[bx_idx])
@@ -568,10 +685,21 @@ def derive_bz(ctx: FetchContext) -> bool:
             bt = float(row[bt_idx])
         except Exception:
             continue
-        lines.append(f"{int(dt.timestamp())} {bx:6.1f} {by:6.1f} {bz:6.1f} {bt:6.1f}")
+        ts = int(dt.timestamp())
+        bucket = ts - (ts % 600)
+        prev = buckets.get(bucket)
+        if prev is None or ts >= prev[0]:
+            buckets[bucket] = (ts, bx, by, bz, bt)
 
-    if len(lines) <= 1:
+    points = sorted(buckets.values(), key=lambda item: item[0])
+    if not points:
         return False
+    if len(points) > 150:
+        points = points[-150:]
+
+    lines: List[str] = ["# UNIX        Bx     By     Bz     Bt"]
+    for ts, bx, by, bz, bt in points:
+        lines.append(f"{ts} {bx:6.1f} {by:6.1f} {bz:6.1f} {bt:6.1f}")
 
     target = ctx.data_root / "Bz" / "Bz.txt"
     _atomic_write(target, "\n".join(lines) + "\n")
@@ -703,10 +831,31 @@ def _parse_aurora_hemi_power(raw_text: str) -> List[Tuple[int, float]]:
         line = line.strip()
         if not line or not line[0].isdigit():
             continue
+        parts = line.split()
+        if len(parts) >= 4 and ("_" in parts[0] or "T" in parts[0]):
+            dt = None
+            for fmt in ("%Y-%m-%d_%H:%M", "%Y-%m-%d_%H:%M:%S"):
+                try:
+                    dt = datetime.strptime(parts[0], fmt).replace(tzinfo=timezone.utc)
+                    break
+                except ValueError:
+                    continue
+            if dt is None:
+                dt = _parse_time(parts[0].replace("_", "T"))
+            if dt is not None:
+                values: List[float] = []
+                for token in parts[2:]:
+                    try:
+                        values.append(float(token))
+                    except Exception:
+                        continue
+                if values:
+                    parsed.append((int(dt.timestamp()), max(values)))
+                    continue
         dt = None
         rest = ""
         match = re.match(
-            r"(\\d{4})[-/](\\d{1,2})[-/](\\d{1,2})[ T]+(\\d{2}):?(\\d{2})(?::?(\\d{2}))?",
+            r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})[ T_]+(\d{2}):?(\d{2})(?::?(\d{2}))?",
             line,
         )
         if match:
@@ -722,7 +871,7 @@ def _parse_aurora_hemi_power(raw_text: str) -> List[Tuple[int, float]]:
             )
             rest = line[match.end() :]
         else:
-            match = re.match(r"(\\d{4})\\s+(\\d{1,2})\\s+(\\d{1,2})\\s+(\\d{4})", line)
+            match = re.match(r"(\d{4})\s+(\d{1,2})\s+(\d{1,2})\s+(\d{4})", line)
             if match:
                 year, month, day, hhmm = match.groups()
                 hour = int(hhmm[:2])
@@ -733,7 +882,7 @@ def _parse_aurora_hemi_power(raw_text: str) -> List[Tuple[int, float]]:
             continue
         values = [
             float(val)
-            for val in re.findall(r"[-+]?\\d+(?:\\.\\d+)?(?:[eE][-+]?\\d+)?", rest)
+            for val in re.findall(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", rest)
         ]
         if not values:
             continue
@@ -977,6 +1126,19 @@ def derive_dst(ctx: FetchContext) -> bool:
                 lines.append(f"{dt.strftime('%Y-%m-%dT%H:%M:%S')} {value_i}")
     if not lines:
         return False
+    def _parse_iso(line: str) -> Optional[datetime]:
+        try:
+            return datetime.strptime(line.split()[0], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
+    stamped: List[Tuple[datetime, str]] = []
+    for line in lines:
+        dt = _parse_iso(line)
+        if dt:
+            stamped.append((dt, line))
+    if stamped:
+        stamped.sort(key=lambda item: item[0])
+        lines = [line for _, line in stamped[-24:]]
     target = ctx.data_root / "dst" / "dst.txt"
     _atomic_write(target, "\n".join(lines) + "\n")
     return True

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from .http import fetch_first_ok
+from requests import HTTPError
 from .phase1 import FetchContext
 
 
@@ -111,14 +112,34 @@ def _map_weather_code(code: Optional[int]) -> Tuple[str, str]:
     return "Unknown", "Unknown"
 
 
-def _fetch_open_meteo_current(lat: float, lng: float, timeout: float, user_agent: str) -> Optional[Dict[str, float]]:
-    url = (
-        "https://api.open-meteo.com/v1/forecast"
-        f"?latitude={lat}&longitude={lng}"
-        "&current_weather=true&hourly=relativehumidity_2m,pressure_msl,cloudcover"
-        "&timezone=auto"
+def _build_open_meteo_url(base_url: str, params: List[str], api_key: Optional[str]) -> str:
+    query = "&".join(params)
+    if api_key:
+        query = f"{query}&apikey={api_key}"
+    sep = "&" if "?" in base_url else "?"
+    return f"{base_url}{sep}{query}"
+
+
+def _fetch_open_meteo_current(ctx: FetchContext, lat: float, lng: float) -> Optional[Dict[str, float]]:
+    url = _build_open_meteo_url(
+        ctx.open_meteo_base_url,
+        [
+            f"latitude={lat}",
+            f"longitude={lng}",
+            "current_weather=true",
+            "hourly=relativehumidity_2m,pressure_msl,cloudcover",
+            "timezone=auto",
+        ],
+        ctx.open_meteo_api_key,
     )
-    data = fetch_first_ok([url], timeout, user_agent).content
+    try:
+        data = fetch_first_ok([url], ctx.timeout, ctx.user_agent).content
+    except Exception as exc:  # noqa: BLE001
+        if isinstance(exc, HTTPError) and exc.response is not None and exc.response.status_code == 429:
+            log.warning("Open-Meteo fetch rate limited (429) for lat=%.3f lng=%.3f", lat, lng)
+        else:
+            log.warning("Open-Meteo fetch failed: %s", exc)
+        return None
     try:
         payload = __import__("json").loads(data)
     except Exception as exc:  # noqa: BLE001
@@ -164,7 +185,7 @@ def _fetch_open_meteo_current(lat: float, lng: float, timeout: float, user_agent
 
 
 def update_wx(ctx: FetchContext, is_de: bool, lat: float, lng: float) -> Optional[str]:
-    data = _fetch_open_meteo_current(lat, lng, ctx.timeout, ctx.user_agent)
+    data = _fetch_open_meteo_current(ctx, lat, lng)
     if not data:
         return None
 
@@ -196,20 +217,41 @@ def ingest_worldwx(ctx: FetchContext) -> bool:
     lngs = list(range(-180, 181, 5))
     raw_dir = ctx.data_root / "raw" / "worldwx"
     raw_dir.mkdir(parents=True, exist_ok=True)
+    rate_limit_path = raw_dir / "rate-limit.txt"
+    if rate_limit_path.exists():
+        try:
+            last = datetime.fromtimestamp(float(rate_limit_path.read_text(encoding="utf-8").strip()), tz=timezone.utc)
+            if datetime.now(timezone.utc) - last < timedelta(minutes=30):
+                log.warning("Open-Meteo rate limited recently; skipping worldwx ingest")
+                return False
+        except Exception:
+            pass
 
     ok = False
     for lng in lngs:
         lat_values = ",".join(str(lat) for lat in lats)
         lng_values = ",".join([str(lng)] * len(lats))
-        url = (
-            "https://api.open-meteo.com/v1/forecast"
-            f"?latitude={lat_values}&longitude={lng_values}"
-            "&current_weather=true&hourly=relativehumidity_2m,pressure_msl"
-            "&timezone=UTC"
+        url = _build_open_meteo_url(
+            ctx.open_meteo_base_url,
+            [
+                f"latitude={lat_values}",
+                f"longitude={lng_values}",
+                "current_weather=true",
+                "hourly=relativehumidity_2m,pressure_msl",
+                "timezone=UTC",
+            ],
+            ctx.open_meteo_api_key,
         )
         try:
             data = fetch_first_ok([url], ctx.timeout, ctx.user_agent).content
         except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, HTTPError) and exc.response is not None and exc.response.status_code == 429:
+                log.warning("Open-Meteo rate limited (429); stopping worldwx ingest at lng=%s", lng)
+                try:
+                    rate_limit_path.write_text(str(datetime.now(timezone.utc).timestamp()), encoding="utf-8")
+                except Exception:
+                    pass
+                break
             log.warning("Open-Meteo grid fetch failed: %s", exc)
             continue
         (raw_dir / f"{lng}.json").write_bytes(data)

@@ -104,10 +104,14 @@ def test_ingest_phase2_sources() -> None:
 
         with patch(
             "backend.server.fetchers.phase2.fetch_first_ok",
-            return_value=_result((FIXTURE_ROOT / "noaa-planetary-k-index.json").read_bytes()),
+            side_effect=[
+                _result((FIXTURE_ROOT / "noaa-planetary-k-index.json").read_bytes()),
+                _result((FIXTURE_ROOT / "noaa-planetary-k-index.json").read_bytes()),
+            ],
         ):
             assert ingest_kindex(ctx) is True
         assert (tmp_path / "raw" / "geomag" / "noaa-planetary-k-index.json").exists()
+        assert (tmp_path / "raw" / "geomag" / "noaa-planetary-k-index-forecast.json").exists()
 
         with patch(
             "backend.server.fetchers.phase2.fetch_first_ok",

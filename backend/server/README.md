@@ -53,6 +53,8 @@ curl -v "http://localhost:8080/fetchIPGeoloc.pl?IP=8.8.8.8"
 - `HAMCLOCK_GEOCODE_PROVIDER` (default: `nominatim`)
 - `HAMCLOCK_GEOCODE_BASE_URL` (default: `https://nominatim.openstreetmap.org/reverse`)
 - `HAMCLOCK_GEOCODE_EMAIL` (default: unset, recommended for Nominatim usage)
+- `HAMCLOCK_OPEN_METEO_BASE_URL` (default: `https://api.open-meteo.com/v1/forecast`)
+- `HAMCLOCK_OPEN_METEO_API_KEY` (default: unset)
 - `HAMCLOCK_PROP_ENABLED` (default: `0`)
 - `HAMCLOCK_PROP_ENGINE` (default: `iturhfprop`)
 - `HAMCLOCK_PROP_CLI_PATH` (default: unset)
@@ -195,6 +197,9 @@ Notes:
 --fetcher-ua STRING
 --geoloc-provider NAME
 --geoloc-timeout SECONDS
+--open-meteo-base-url URL
+--open-meteo-api-key KEY
+--health-check-now
 --strict-missing
 ```
 

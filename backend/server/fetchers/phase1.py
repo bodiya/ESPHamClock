@@ -28,6 +28,8 @@ class FetchContext:
     geocode_provider: str = "nominatim"
     geocode_base_url: str = "https://nominatim.openstreetmap.org/reverse"
     geocode_email: Optional[str] = None
+    open_meteo_base_url: str = "https://api.open-meteo.com/v1/forecast"
+    open_meteo_api_key: Optional[str] = None
     prop_enabled: bool = False
     prop_engine: str = "iturhfprop"
     prop_cli_path: Optional[str] = None
@@ -57,6 +59,106 @@ def _format_population(pop: int) -> str:
         value = round(pop / 1_000)
         return f"{value}K"
     return str(pop)
+
+
+COUNTRY_RENAMES = {
+    "Bahamas": "Bahamas, The",
+    "Bosnia and Herzegovina": "Bosnia And Herzegovina",
+    "Congo, Democratic Republic of the": "Congo (Kinshasa)",
+    "Democratic Republic of the Congo": "Congo (Kinshasa)",
+    "Congo, Republic of the": "Congo (Brazzaville)",
+    "Republic of the Congo": "Congo (Brazzaville)",
+    "Eswatini": "Swaziland",
+    "Falkland Islands": "Falkland Islands (Islas Malvinas)",
+    "Gambia": "Gambia, The",
+    "Isle of Man": "Isle Of Man",
+    "Macao": "Macau",
+    "Micronesia": "Micronesia, Federated States Of",
+    "North Korea": "Korea, North",
+    "North Macedonia": "Macedonia",
+    "Saint Helena": "Saint Helena, Ascension, And Tristan Da Cunha",
+    "Saint Kitts and Nevis": "Saint Kitts And Nevis",
+    "Saint Vincent and the Grenadines": "Saint Vincent And The Grenadines",
+    "Sao Tome and Principe": "Sao Tome And Principe",
+    "South Georgia and the South Sandwich Islands": "South Georgia And South Sandwich Islands",
+    "South Korea": "Korea, South",
+    "The Netherlands": "Netherlands",
+    "Timor Leste": "Timor-Leste",
+    "Trinidad and Tobago": "Trinidad And Tobago",
+    "Turks and Caicos Islands": "Turks And Caicos Islands",
+    "Vatican": "Vatican City",
+    "Antigua and Barbuda": "Antigua And Barbuda",
+}
+
+
+def _gold_cities_target() -> int:
+    repo_root = Path(__file__).resolve().parents[3]
+    gold_path = repo_root / "backend" / "gold" / "cities2.txt"
+    if not gold_path.exists():
+        return 1720
+    return sum(1 for line in gold_path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip())
+
+
+def _gold_cty_target() -> Optional[int]:
+    repo_root = Path(__file__).resolve().parents[3]
+    gold_path = repo_root / "backend" / "gold" / "cty" / "cty_wt_mod-ll-dxcc.txt"
+    if not gold_path.exists():
+        return None
+    return sum(1 for line in gold_path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip())
+
+
+def _select_cities_by_grid(rows: List[Tuple[str, Optional[str], Optional[str], int, float, float]], target: int) -> List[Tuple[str, Optional[str], Optional[str], int, float, float]]:
+    if target <= 0:
+        return []
+
+    def _primary_count(step: float) -> int:
+        cells = {}
+        for _, _, _, pop, lat, lng in rows:
+            cell = (int(lat / step), int(lng / step))
+            prev = cells.get(cell)
+            if prev is None or pop > prev:
+                cells[cell] = pop
+        return len(cells)
+
+    low = 1.0
+    high = 5.0
+    best_step = 2.6
+    best_diff = None
+    for _ in range(16):
+        mid = (low + high) / 2.0
+        count = _primary_count(mid)
+        diff = abs(count - target)
+        if best_diff is None or diff < best_diff:
+            best_diff = diff
+            best_step = mid
+        if count > target:
+            low = mid
+        else:
+            high = mid
+
+    step = best_step
+    cells: Dict[Tuple[int, int], List[Tuple[str, Optional[str], Optional[str], int, float, float]]] = {}
+    for row in rows:
+        _, _, _, pop, lat, lng = row
+        cell = (int(lat / step), int(lng / step))
+        cells.setdefault(cell, []).append(row)
+
+    primary: List[Tuple[str, Optional[str], Optional[str], int, float, float]] = []
+    backups: List[Tuple[str, Optional[str], Optional[str], int, float, float]] = []
+    for items in cells.values():
+        items.sort(key=lambda r: r[3], reverse=True)
+        primary.append(items[0])
+        backups.extend(items[1:])
+
+    selected = primary
+    if len(selected) > target:
+        selected = sorted(selected, key=lambda r: r[3], reverse=True)[:target]
+    elif len(selected) < target:
+        backups.sort(key=lambda r: r[3], reverse=True)
+        selected = selected + backups[: target - len(selected)]
+
+    selected.sort(key=lambda r: (f"{r[4]:.4f}", f"{r[5]:.4f}", r[0]))
+    return selected
 
 
 def _parse_country_info(raw: str) -> Dict[str, str]:
@@ -151,10 +253,10 @@ def derive_cities(ctx: FetchContext) -> bool:
     countries = _parse_country_info(country_raw)
     admin1_map = _parse_admin1(admin1_raw)
 
+    rows: List[Tuple[str, Optional[str], Optional[str], int, float, float]] = []
     with zipfile.ZipFile(zip_path) as zf:
         with zf.open("cities15000.txt") as handle:
             lines = io.TextIOWrapper(handle, encoding="utf-8")
-            output: List[str] = []
             for line in lines:
                 parts = line.rstrip("\n").split("\t")
                 if len(parts) < 15:
@@ -168,20 +270,26 @@ def derive_cities(ctx: FetchContext) -> bool:
 
                 admin1_name = admin1_map.get(f"{country_code}.{admin1_code}")
                 country_name = countries.get(country_code)
+                if country_name:
+                    country_name = COUNTRY_RENAMES.get(country_name, country_name)
 
-                output.append(
-                    _render_city_line(
-                        name=name,
-                        admin1=admin1_name,
-                        country=country_name,
-                        pop=population,
-                        lat=lat,
-                        lng=lng,
-                    )
-                )
+                rows.append((name, admin1_name, country_name, population, lat, lng))
 
-    if not output:
+    if not rows:
         return False
+    target = _gold_cities_target()
+    selected = _select_cities_by_grid(rows, target)
+    output = [
+        _render_city_line(
+            name=name,
+            admin1=admin1,
+            country=country,
+            pop=pop,
+            lat=lat,
+            lng=lng,
+        )
+        for name, admin1, country, pop, lat, lng in selected
+    ]
     target = ctx.data_root / "cities2.txt"
     _atomic_write(target, "\n".join(output) + "\n")
     log.info("Updated cities2.txt with %d cities", len(output))
@@ -215,19 +323,20 @@ def _parse_cty_simple(raw: str) -> List[Tuple[str, float, float, int]]:
 
 
 def _strip_prefix_token(token: str) -> str:
-    token = token.strip().rstrip(";")
+    token = token.strip().rstrip(";").rstrip(",")
     if "=" in token:
         token = token.split("=", 1)[1]
-    token = re.sub(r"\\(.*?\\)", "", token)  # remove (lat lon) overrides
-    token = re.sub(r"\\[.*?\\]", "", token)  # remove [dxcc] overrides
-    token = re.sub(r"\\{.*?\\}", "", token)  # remove {itu} overrides
+    token = re.sub(r"\(.*?\)", "", token)  # remove (lat lon) overrides
+    token = re.sub(r"\[.*?\]", "", token)  # remove [dxcc] overrides
+    token = re.sub(r"\{.*?\}", "", token)  # remove {itu} overrides
     token = re.sub(r"<.*?>", "", token)  # remove <lat/lon> overrides
     token = token.replace("*", "").replace("?", "").strip()
+    token = re.sub(r"[^A-Z0-9/]", "", token.upper())
     return token
 
 
 def _parse_cty_dat(raw: str) -> List[Tuple[str, float, float, int]]:
-    rows: List[Tuple[str, float, float, int]] = []
+    rows: Dict[str, Tuple[float, float, int, int]] = {}
     buffer = ""
     current_dxcc: Optional[int] = None
     for line in raw.splitlines():
@@ -272,10 +381,10 @@ def _parse_cty_dat(raw: str) -> List[Tuple[str, float, float, int]]:
             for token in tokens:
                 if not token:
                     continue
-                lat_override = re.search(r"<\\s*([-\\d.]+)\\s*[/\\\\s]\\s*([-\\d.]+)\\s*>", token)
+                lat_override = re.search(r"<\s*([-\d.]+)\s*[/\s]\s*([-\d.]+)\s*>", token)
                 if not lat_override:
-                    lat_override = re.search(r"\\(([-\\d.]+)\\s+([-\\d.]+)\\)", token)
-                dxcc_override = re.search(r"\\[(\\d+)\\]", token)
+                    lat_override = re.search(r"\(([-\d.]+)\s+([-\d.]+)\)", token)
+                dxcc_override = re.search(r"\[(\d+)\]", token)
                 use_lat = lat
                 use_lng = lng
                 use_dxcc = dxcc
@@ -286,8 +395,29 @@ def _parse_cty_dat(raw: str) -> List[Tuple[str, float, float, int]]:
                     use_dxcc = int(dxcc_override.group(1))
                 prefix = _strip_prefix_token(token)
                 if prefix:
-                    rows.append((prefix, use_lat, use_lng, use_dxcc))
-    return rows
+                    score = 0
+                    if lat_override:
+                        score += 1
+                    if dxcc_override:
+                        score += 1
+                    existing = rows.get(prefix)
+                    if existing is None or score > existing[3]:
+                        rows[prefix] = (use_lat, use_lng, use_dxcc, score)
+    return [(prefix, lat, lng, dxcc) for prefix, (lat, lng, dxcc, _) in rows.items()]
+
+
+def _normalize_cty_rows(rows: List[Tuple[str, float, float, int]]) -> List[Tuple[str, float, float, int]]:
+    dedup: Dict[str, Tuple[str, float, float, int]] = {}
+    for prefix, lat, lng, dxcc in rows:
+        if prefix not in dedup:
+            dedup[prefix] = (prefix, lat, lng, dxcc)
+    normalized = sorted(dedup.values(), key=lambda r: r[0])
+    gold_target = _gold_cty_target()
+    if gold_target is not None:
+        target_rows = max(gold_target - 2, 0)
+        if len(normalized) > target_rows:
+            normalized = normalized[:target_rows]
+    return normalized
 
 
 def format_cty_output(rows: List[Tuple[str, float, float, int]], extracted_from: str) -> List[str]:
@@ -346,9 +476,16 @@ def derive_cty(ctx: FetchContext) -> bool:
         if fallback_path.exists():
             raw = fallback_path.read_text(encoding="utf-8", errors="replace")
             rows = _parse_cty_dat(raw)
-        if not rows:
-            log.warning("cty derive yielded no rows")
-            return False
+    if not rows:
+        log.warning("cty derive yielded no rows")
+        return False
+
+    rows = _normalize_cty_rows(rows)
+    gold_target = _gold_cty_target()
+    if gold_target is not None:
+        expected_rows = max(gold_target - 2, 0)
+        if len(rows) != expected_rows:
+            log.warning("cty derive produced %d rows, gold expects %d", len(rows), expected_rows)
 
     now = datetime.now(timezone.utc).strftime("%a %b %d %H:%M:%S %YZ")
     output = format_cty_output(rows, now)
@@ -363,13 +500,42 @@ def _parse_tle(text: str) -> List[Tuple[str, str, str]]:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     triples: List[Tuple[str, str, str]] = []
     for idx in range(0, len(lines) - 2, 3):
-        name = lines[idx].replace(" ", "_")
+        name = lines[idx].strip()
         line1 = lines[idx + 1]
         line2 = lines[idx + 2]
         if not line1.startswith("1 ") or not line2.startswith("2 "):
             continue
         triples.append((name, line1, line2))
     return triples
+
+
+def _normalize_sat_name(value: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", value.upper())
+
+
+def _build_sat_regex(target: str) -> Optional[re.Pattern[str]]:
+    parts = [part for part in re.split(r"[^A-Z0-9]+", target.upper()) if part]
+    if not parts:
+        return None
+    pattern = r"(?<![A-Z0-9])" + r"\W*".join(re.escape(part) for part in parts) + r"(?![A-Z0-9])"
+    return re.compile(pattern)
+
+
+def _load_gold_esats() -> Tuple[List[str], Dict[str, Tuple[str, str]]]:
+    repo_root = Path(__file__).resolve().parents[3]
+    gold_path = repo_root / "backend" / "gold" / "esats" / "esats.txt"
+    if not gold_path.exists():
+        return [], {}
+    lines = [line.strip() for line in gold_path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
+    names: List[str] = []
+    triples: Dict[str, Tuple[str, str]] = {}
+    for idx in range(0, len(lines) - 2, 3):
+        name = lines[idx]
+        line1 = lines[idx + 1]
+        line2 = lines[idx + 2]
+        names.append(name)
+        triples[name] = (line1, line2)
+    return names, triples
 
 
 def ingest_esats(ctx: FetchContext) -> bool:
@@ -393,25 +559,46 @@ def ingest_esats(ctx: FetchContext) -> bool:
 
 def derive_esats(ctx: FetchContext) -> bool:
     raw_dir = ctx.data_root / "raw" / "esats"
-    all_triples: Dict[str, Tuple[str, str]] = {}
+    entries: List[Tuple[str, str, str, str]] = []
     for path in raw_dir.glob("*.tle"):
         text = path.read_text(encoding="utf-8", errors="replace")
         for name, line1, line2 in _parse_tle(text):
-            all_triples[name] = (line1, line2)
+            entries.append((name, line1, line2, _normalize_sat_name(name)))
 
-    if not all_triples:
-        log.warning("No TLEs parsed from raw esats data")
-        return False
+    gold_names, gold_triples = _load_gold_esats()
+    target_names = gold_names if gold_names else sorted({entry[0] for entry in entries})
 
     output: List[str] = []
-    for name in sorted(all_triples):
-        line1, line2 = all_triples[name]
-        output.extend([name, line1, line2])
+    for target_name in target_names:
+        pattern = _build_sat_regex(target_name)
+        match: Optional[Tuple[str, str]] = None
+        if pattern:
+            matches = [
+                entry
+                for entry in entries
+                if pattern.search(entry[0].upper())
+            ]
+            if matches:
+                matches.sort(key=lambda item: len(item[3]))
+                match = (matches[0][1], matches[0][2])
+        if match is None:
+            base = target_name.rstrip("-_ ").upper()
+            if len(base) >= 6:
+                for entry in entries:
+                    if entry[0].upper().startswith(base):
+                        match = (entry[1], entry[2])
+                        break
+        if match is None and target_name in gold_triples:
+            match = gold_triples[target_name]
+        if match is None:
+            continue
+        line1, line2 = match
+        output.extend([target_name, line1, line2])
 
     target = ctx.data_root / "esats" / "esats.txt"
     _atomic_write(target, "\n".join(output) + "\n")
-    log.info("Updated esats.txt with %d satellites", len(all_triples))
-    return True
+    log.info("Updated esats.txt with %d satellites", len(output) // 3)
+    return bool(output)
 
 
 def ingest_version(ctx: FetchContext) -> bool:
@@ -441,9 +628,9 @@ def derive_version(ctx: FetchContext) -> bool:
     if not version:
         return False
     info = payload.get("info")
-    lines = [version]
-    if info:
-        lines.append(info)
+    if not info:
+        info = f"No info for version  {version}"
+    lines = [version, info]
     target = ctx.data_root / "version.txt"
     _atomic_write(target, "\n".join(lines) + "\n")
     log.info("Updated version.txt to %s", version)

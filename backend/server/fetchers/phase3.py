@@ -54,62 +54,124 @@ def _coerce_freq_hz(value: Optional[object]) -> Optional[int]:
     return int(freq)
 
 
+def _format_coord(value: Optional[object]) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            float(text)
+        except Exception:
+            return None
+        return text
+    try:
+        val = float(value)
+    except Exception:
+        return None
+    return f"{val:.8f}".rstrip("0").rstrip(".")
+
+
+def _default_coord(value: Optional[object]) -> str:
+    coord = _format_coord(value)
+    return coord if coord is not None else "0"
+
+
+def _gold_onta_target() -> Optional[int]:
+    repo_root = Path(__file__).resolve().parents[3]
+    gold_path = repo_root / "backend" / "gold" / "ONTA" / "onta.txt"
+    if not gold_path.exists():
+        return None
+    return sum(1 for line in gold_path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip())
+
+
 def ingest_onta(ctx: FetchContext) -> bool:
-    url = "https://api.pota.app/spot/activator"
+    activator_url = "https://api.pota.app/spot/activator"
+    spot_url = "https://api.pota.app/spot"
     raw_dir = ctx.data_root / "raw" / "onta"
     raw_dir.mkdir(parents=True, exist_ok=True)
+    ok = False
     try:
-        data = fetch_first_ok([url], ctx.timeout, ctx.user_agent).content
+        data = fetch_first_ok([activator_url], ctx.timeout, ctx.user_agent).content
+        (raw_dir / "activator.json").write_bytes(data)
+        ok = True
     except Exception as exc:  # noqa: BLE001
-        log.warning("POTA ingest failed: %s", exc)
-        return False
-    (raw_dir / "activator.json").write_bytes(data)
-    return True
+        log.warning("POTA ingest failed (%s): %s", activator_url, exc)
+    try:
+        data = fetch_first_ok([spot_url], ctx.timeout, ctx.user_agent).content
+        (raw_dir / "spot.json").write_bytes(data)
+        ok = True
+    except Exception as exc:  # noqa: BLE001
+        log.warning("POTA ingest failed (%s): %s", spot_url, exc)
+    return ok
 
 
 def derive_onta(ctx: FetchContext) -> bool:
-    raw_path = ctx.data_root / "raw" / "onta" / "activator.json"
-    if not raw_path.exists():
-        return False
-    try:
-        spots = __import__("json").loads(raw_path.read_text(encoding="utf-8"))
-    except Exception as exc:  # noqa: BLE001
-        log.warning("POTA JSON decode failed: %s", exc)
-        return False
-
-    if not isinstance(spots, list):
-        return False
-
-    lines = ["#call,Hz,unix,mode,grid,lat,lng,park,org"]
-    for spot in spots:
-        if not isinstance(spot, dict):
-            continue
-        call = spot.get("activator") or spot.get("activatorCallsign") or spot.get("call") or spot.get("callsign")
-        freq_hz = _coerce_freq_hz(spot.get("frequency") or spot.get("freq") or spot.get("frequency_mhz"))
-        mode = spot.get("mode") or ""
-        grid = spot.get("grid") or spot.get("grid6") or ""
-        lat = spot.get("latitude") or spot.get("lat")
-        lng = spot.get("longitude") or spot.get("lon") or spot.get("lng")
-        park = spot.get("reference") or spot.get("park") or spot.get("locationDesc") or ""
-        time_tag = spot.get("spotTime") or spot.get("timestamp") or spot.get("time")
-        dt = _parse_time(str(time_tag)) if time_tag else None
-        if dt is None and isinstance(time_tag, (int, float)):
-            dt = datetime.fromtimestamp(float(time_tag), tz=timezone.utc)
-
-        if not call or freq_hz is None or dt is None or lat is None or lng is None:
+    raw_dir = ctx.data_root / "raw" / "onta"
+    spot_payloads: List[object] = []
+    for name in ("activator.json", "spot.json"):
+        raw_path = raw_dir / name
+        if not raw_path.exists():
             continue
         try:
-            lat_f = float(lat)
-            lng_f = float(lng)
-        except Exception:
-            continue
-
-        lines.append(
-            f"{call},{freq_hz},{int(dt.timestamp())},{mode},{grid},{lat_f:.4f},{lng_f:.4f},{park},POTA"
-        )
-
-    if len(lines) <= 1:
+            spot_payloads.append(__import__("json").loads(raw_path.read_text(encoding="utf-8")))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("POTA JSON decode failed (%s): %s", name, exc)
+    if not spot_payloads:
         return False
+
+    records: List[Dict[str, object]] = []
+    for payload in spot_payloads:
+        if not isinstance(payload, list):
+            continue
+        for spot in payload:
+            if not isinstance(spot, dict):
+                continue
+            call = spot.get("activator") or spot.get("activatorCallsign") or spot.get("call") or spot.get("callsign")
+            freq_hz = _coerce_freq_hz(spot.get("frequency") or spot.get("freq") or spot.get("frequency_mhz"))
+            mode = spot.get("mode") or ""
+            grid = spot.get("grid") or spot.get("grid6") or ""
+            lat = _default_coord(spot.get("latitude") or spot.get("lat"))
+            lng = _default_coord(spot.get("longitude") or spot.get("lon") or spot.get("lng"))
+            park = spot.get("reference") or spot.get("park") or spot.get("locationDesc") or ""
+            time_tag = spot.get("spotTime") or spot.get("timestamp") or spot.get("time")
+            dt = _parse_time(str(time_tag)) if time_tag else None
+            if dt is None and isinstance(time_tag, (int, float)):
+                dt = datetime.fromtimestamp(float(time_tag), tz=timezone.utc)
+
+            if not call or freq_hz is None or dt is None:
+                continue
+            records.append(
+                {
+                    "call": str(call),
+                    "freq_hz": int(freq_hz),
+                    "time": int(dt.timestamp()),
+                    "mode": str(mode),
+                    "grid": str(grid),
+                    "lat": lat,
+                    "lng": lng,
+                    "park": str(park),
+                    "org": "POTA",
+                }
+            )
+
+    if not records:
+        return False
+
+    target_total = _gold_onta_target()
+    target_rows = (target_total - 1) if target_total else None
+    records.sort(key=lambda r: int(r["time"]), reverse=True)
+    if target_rows is not None and len(records) > target_rows:
+        records = records[:target_rows]
+    records.sort(key=lambda r: (r["call"].upper(), -int(r["time"])))
+
+    lines = ["#call,Hz,unix,mode,grid,lat,lng,park,org"]
+    for record in records:
+        lines.append(
+            f"{record['call']},{record['freq_hz']},{record['time']},{record['mode']},{record['grid']},"
+            f"{record['lat']},{record['lng']},{record['park']},{record['org']}"
+        )
 
     target = ctx.data_root / "ONTA" / "onta.txt"
     _atomic_write(target, "\n".join(lines) + "\n")

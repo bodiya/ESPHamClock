@@ -615,6 +615,10 @@ Exactly 11 name=value lines.
 - Open-Meteo (recommended, no API key): `https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lng}&current_weather=true`
 - OpenWeatherMap: `https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lng}&appid={key}`
 
+**Notes:**
+- Only Open-Meteo `/v1/forecast` (and `/v1/reverse` for reverse geocoding) are required. Advanced Open-Meteo APIs (Satellite Radiation, Climate, Seasonal Forecast, Ensemble, Historical, Historical Forecast, Previous Model Runs) are not used by any current or planned endpoints.
+- The Open-Meteo Standard subscription ($30/month) is sufficient for current usage.
+
 **Update Frequency:** Every 55 minutes
 
 ---
@@ -635,6 +639,10 @@ Blank line separates longitude blocks. Latitude-major ordering.
 
 **Upstream Source:** Open-Meteo grid API
 - Can query multiple points: `https://api.open-meteo.com/v1/forecast?latitude={lat1},{lat2}&longitude={lng1},{lng2}&current_weather=true`
+
+**Notes:**
+- Uses Open-Meteo `/v1/forecast` only. No advanced Open-Meteo APIs are required for the grid.
+- The Open-Meteo Standard subscription ($30/month) is sufficient for current usage.
 
 **Update Frequency:** Every 45 minutes
 

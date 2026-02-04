@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 from datetime import datetime, timezone
 from email.utils import formatdate
 from pathlib import Path
@@ -18,7 +19,7 @@ from .storage import SafePathError, read_binary_and_mtime, read_text_and_mtime
 from .tasks import build_context
 from .fetchers.phase1 import update_cty, update_cities, update_esats, update_version
 from .fetchers.phase4 import update_wx
-from .datasources import get_registry, assess_derived_text, run_derive
+from .datasources import get_registry, assess_derived_text, run_derive, run_health_checks
 from .fallback import fetch_with_cache, setup_fallback_logging
 
 
@@ -519,6 +520,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--fetcher-ua", help="User-Agent string for fetchers")
     parser.add_argument("--geoloc-provider", help="Geoloc provider (file, auto, ip-api, ipapi, ipwhois)")
     parser.add_argument("--geoloc-timeout", type=float, help="Geoloc timeout in seconds")
+    parser.add_argument("--open-meteo-base-url", help="Open-Meteo base URL (default: https://api.open-meteo.com/v1/forecast)")
+    parser.add_argument("--open-meteo-api-key", help="Open-Meteo API key (optional)")
+    parser.add_argument("--health-check-now", action="store_true", help="Run datasource health check and exit")
     parser.add_argument(
         "--strict-missing",
         action="store_true",
@@ -561,11 +565,19 @@ if __name__ == "__main__":
         app.config["GEOLOC_PROVIDER"] = args.geoloc_provider
     if args.geoloc_timeout is not None:
         app.config["GEOLOC_TIMEOUT"] = args.geoloc_timeout
+    if args.open_meteo_base_url:
+        app.config["OPEN_METEO_BASE_URL"] = args.open_meteo_base_url
+    if args.open_meteo_api_key:
+        app.config["OPEN_METEO_API_KEY"] = args.open_meteo_api_key
     if args.strict_missing:
         app.config["STRICT_MISSING"] = True
 
     logging.basicConfig(level=app.config["LOG_LEVEL"])
     setup_fallback_logging(app.config.get("FALLBACK_LOG_FILE"))
+    if args.health_check_now:
+        ctx = build_context(app)
+        ok = run_health_checks(ctx)
+        sys.exit(0 if ok else 1)
     register_base_path_aliases()
     if args.update_x_on_start:
         _update_once(args.update_x_on_start)

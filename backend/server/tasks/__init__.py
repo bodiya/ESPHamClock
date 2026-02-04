@@ -40,6 +40,8 @@ def build_context(app) -> FetchContext:
         geocode_provider=app.config.get("GEOCODE_PROVIDER", "nominatim"),
         geocode_base_url=app.config.get("GEOCODE_BASE_URL", "https://nominatim.openstreetmap.org/reverse"),
         geocode_email=app.config.get("GEOCODE_EMAIL"),
+        open_meteo_base_url=app.config.get("OPEN_METEO_BASE_URL", "https://api.open-meteo.com/v1/forecast"),
+        open_meteo_api_key=app.config.get("OPEN_METEO_API_KEY"),
         prop_enabled=app.config.get("PROP_ENABLED", False),
         prop_engine=app.config.get("PROP_ENGINE", "iturhfprop"),
         prop_cli_path=app.config.get("PROP_CLI_PATH"),
