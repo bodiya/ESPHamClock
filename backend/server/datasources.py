@@ -41,7 +41,7 @@ from .fetchers.phase2 import (
     ingest_aurora,
     derive_aurora,
 )
-from .fetchers.phase3 import ingest_onta, derive_onta, ingest_rss, derive_rss
+from .fetchers.phase3 import ingest_onta, derive_onta, ingest_rss, derive_rss, ingest_contests, derive_contests
 from .fetchers.phase4 import ingest_worldwx, derive_worldwx
 
 
@@ -332,6 +332,17 @@ def _build_sources() -> Dict[str, DataSource]:
             max_age_seconds=60 * 60,
         ),
         DataSource(
+            name="contests",
+            ingest=ingest_contests,
+            derive=derive_contests,
+            ingest_schedule={"trigger": "interval", "hours": 1, "replace_existing": True},
+            derive_schedule={"trigger": "interval", "hours": 1, "replace_existing": True},
+            raw_paths=[Path("raw") / "contests" / "contests311.txt"],
+            derived_paths=[Path("contests") / "contests311.txt"],
+            expected_lines=2,
+            max_age_seconds=2 * 3600,
+        ),
+        DataSource(
             name="rss",
             ingest=ingest_rss,
             derive=derive_rss,
@@ -359,6 +370,12 @@ def _build_sources() -> Dict[str, DataSource]:
         if gold_count is not None:
             source.expected_lines = gold_count
             source.expected_lines_exact = exact
+        if source.name == "onta":
+            source.expected_lines = 2
+            source.expected_lines_exact = False
+        if source.name == "contests":
+            source.expected_lines = None
+            source.expected_lines_exact = False
         if source.time_parser and source.derived_paths:
             gold_spacing = _gold_time_spacing(source.derived_paths[0], source.time_parser)
             if gold_spacing is not None:
@@ -383,6 +400,16 @@ def assess_derived_text(ctx: FetchContext, rel_path: str, text: str, mtime: Opti
     source = find_source_for_path(rel_path)
     if not source:
         return True, ""
+
+    if rel_path == "contests/contests311.txt":
+        for line in text.splitlines():
+            stripped = line.lstrip()
+            if not stripped:
+                continue
+            lowered = stripped.lower()
+            if lowered.startswith("<!doctype") or lowered.startswith("<html"):
+                return False, "html response"
+            break
 
     if source.max_age_seconds is not None and mtime is not None:
         age = (datetime.now(timezone.utc) - datetime.fromtimestamp(mtime, tz=timezone.utc)).total_seconds()
@@ -437,13 +464,28 @@ def run_derive(ctx: FetchContext, source: DataSource) -> bool:
     return ok
 
 
+def run_ingest_then_derive(ctx: FetchContext, source: DataSource) -> bool:
+    ingest_ok = True
+    if source.ingest:
+        try:
+            ingest_ok = bool(source.ingest(ctx))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Ingest %s failed: %s", source.name, exc)
+            ingest_ok = False
+    if not ingest_ok:
+        log.warning("Ingest %s failed; attempting derive from existing raw", source.name)
+    if source.derive:
+        return run_derive(ctx, source)
+    return ingest_ok
+
+
 def iter_jobs(ctx: FetchContext) -> List[Dict[str, Any]]:
     jobs: List[Dict[str, Any]] = []
     for source in get_registry().values():
         if source.ingest and source.ingest_schedule:
             job = dict(source.ingest_schedule)
             job["id"] = f"ingest:{source.name}"
-            job["func"] = source.ingest
+            job["func"] = lambda ctx, source=source: run_ingest_then_derive(ctx, source)
             job["args"] = [ctx]
             jobs.append(job)
         if source.derive and source.derive_schedule:

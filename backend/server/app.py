@@ -13,13 +13,13 @@ from flask import Flask, Response, request
 from .config import default_config
 from .scheduler import start_scheduler
 from .services.geoloc import lookup_ip
-from .services.spots import fetch_pskreporter, fetch_wspr, fetch_rbn
+from .services.spots import fetch_pskreporter as psk_fetcher, fetch_wspr as wspr_fetcher, fetch_rbn as rbn_fetcher
 from .services.propagation import compute_band_conditions
 from .storage import SafePathError, read_binary_and_mtime, read_text_and_mtime
 from .tasks import build_context
 from .fetchers.phase1 import update_cty, update_cities, update_esats, update_version
 from .fetchers.phase4 import update_wx
-from .datasources import get_registry, assess_derived_text, run_derive, run_health_checks
+from .datasources import get_registry, assess_derived_text, run_derive, run_health_checks, run_ingest_then_derive
 from .fallback import fetch_with_cache, setup_fallback_logging
 
 
@@ -332,7 +332,7 @@ def fetch_pskreporter() -> Response:
             break
 
     if query_type and query_value:
-        content = fetch_pskreporter(
+        content = psk_fetcher(
             data_root=app.config["DATA_ROOT"],
             user_agent=app.config["FETCHER_USER_AGENT"],
             timeout=app.config.get("FETCHER_TIMEOUT", 15.0),
@@ -360,7 +360,7 @@ def fetch_wspr() -> Response:
             break
 
     if query_type and query_value:
-        content = fetch_wspr(
+        content = wspr_fetcher(
             data_root=app.config["DATA_ROOT"],
             user_agent=app.config["FETCHER_USER_AGENT"],
             timeout=app.config.get("FETCHER_TIMEOUT", 15.0),
@@ -386,7 +386,7 @@ def fetch_rbn() -> Response:
             break
 
     if query_type and query_value:
-        content = fetch_rbn(
+        content = rbn_fetcher(
             data_root=app.config["DATA_ROOT"],
             user_agent=app.config["FETCHER_USER_AGENT"],
             timeout=app.config.get("FETCHER_TIMEOUT", 15.0),
@@ -457,12 +457,11 @@ def refresh_on_start() -> None:
     for source in registry.values():
         if source.ingest:
             try:
-                ok = source.ingest(ctx)
-                log.info("Startup ingest %s completed: %s", source.name, ok)
+                ok = run_ingest_then_derive(ctx, source)
+                log.info("Startup ingest+derive %s completed: %s", source.name, ok)
             except Exception as exc:  # noqa: BLE001
-                log.warning("Startup ingest %s failed: %s", source.name, exc)
-    for source in registry.values():
-        if source.derive:
+                log.warning("Startup ingest+derive %s failed: %s", source.name, exc)
+        elif source.derive:
             try:
                 ok = run_derive(ctx, source)
                 log.info("Startup derive %s completed: %s", source.name, ok)

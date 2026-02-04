@@ -200,6 +200,40 @@ def _parse_rss_titles(xml_text: str) -> List[Dict[str, str]]:
     return items
 
 
+def ingest_contests(ctx: FetchContext) -> bool:
+    urls = [
+        "https://clearskyinstitute.com/ham/HamClock/contests/contests311.txt",
+        "http://clearskyinstitute.com/ham/HamClock/contests/contests311.txt",
+    ]
+    raw_dir = ctx.data_root / "raw" / "contests"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        result = fetch_first_ok(urls, ctx.timeout, ctx.user_agent)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("contests ingest failed: %s", exc)
+        return False
+    (raw_dir / "contests311.txt").write_bytes(result.content)
+    return True
+
+
+def derive_contests(ctx: FetchContext) -> bool:
+    raw_path = ctx.data_root / "raw" / "contests" / "contests311.txt"
+    if not raw_path.exists():
+        return False
+    text = raw_path.read_text(encoding="utf-8", errors="replace")
+    lines = [line.rstrip("\n") for line in text.splitlines() if line.strip()]
+    if not lines:
+        return False
+    first = lines[0].lstrip().lower()
+    if first.startswith("<!doctype") or first.startswith("<html"):
+        log.warning("contests derive rejected HTML content")
+        return False
+
+    target = ctx.data_root / "contests" / "contests311.txt"
+    _atomic_write(target, "\n".join(lines) + "\n")
+    return True
+
+
 def ingest_rss(ctx: FetchContext) -> bool:
     feeds = ctx.rss_feeds or []
     raw_dir = ctx.data_root / "raw" / "rss"

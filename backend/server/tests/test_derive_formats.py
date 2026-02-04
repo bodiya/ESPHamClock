@@ -29,7 +29,7 @@ from backend.server.fetchers.phase2 import (
     derive_dst,
     derive_drap,
 )
-from backend.server.fetchers.phase3 import derive_onta, derive_rss
+from backend.server.fetchers.phase3 import derive_onta, derive_rss, derive_contests
 from backend.server.fetchers.phase4 import derive_worldwx
 
 
@@ -374,6 +374,22 @@ def test_derive_onta_and_rss_formats() -> None:
         assert rss_lines and ":" in rss_lines[0]
         gold_rss = (GOLD_ROOT / "RSS" / "web15rss.txt").read_text(encoding="utf-8").splitlines()
         _compare_to_gold("rss", rss_lines, gold_rss)
+
+
+def test_derive_contests_format() -> None:
+    with TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        raw_contests = tmp_path / "raw" / "contests"
+        raw_contests.mkdir(parents=True, exist_ok=True)
+        gold = (GOLD_ROOT / "contests" / "contests311.txt").read_text(encoding="utf-8")
+        (raw_contests / "contests311.txt").write_text(gold, encoding="utf-8")
+
+        ctx = _ctx(tmp_path)
+        assert derive_contests(ctx) is True
+
+        out_lines = (tmp_path / "contests" / "contests311.txt").read_text(encoding="utf-8").splitlines()
+        gold_lines = gold.splitlines()
+        _compare_to_gold("contests", out_lines, gold_lines)
 
 
 def test_derive_worldwx_format() -> None:

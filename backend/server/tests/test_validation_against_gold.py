@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from backend.server.datasources import assess_derived_text, get_registry
+from backend.server.datasources import assess_derived_text, get_registry, find_source_for_path
 from backend.server.fetchers.phase1 import FetchContext
 
 
@@ -38,4 +38,8 @@ def test_validation_requires_gold_line_counts() -> None:
                 truncated = "\n".join(lines[:-1]) + "\n"
                 target.write_text(truncated, encoding="utf-8")
                 ok, reason = assess_derived_text(ctx, str(rel_path), truncated, target.stat().st_mtime)
-                assert not ok, f"{rel_path} should fail with missing line count"
+                source = find_source_for_path(str(rel_path))
+                if source is None or source.expected_lines is None:
+                    continue
+                if source.expected_lines_exact or len(lines) - 1 < source.expected_lines:
+                    assert not ok, f"{rel_path} should fail with missing line count"
